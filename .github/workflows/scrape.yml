@@ -1,0 +1,44 @@
+name: Price Radar – skrapa konkurrentpriser
+
+on:
+  schedule:
+    # Varje natt 03:15 UTC (05:15 svensk sommartid). Justera cron efter behov.
+    - cron: "15 3 * * *"
+  workflow_dispatch:        # låter dig köra den manuellt från Actions-fliken
+    inputs:
+      limit:
+        description: "Max antal produkter (tomt = alla)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Torrkörning (skriv inget)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: price-radar
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330      # katalogen är stor; ge den gott om tid
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installera beroenden
+        run: pip install -r requirements.txt
+
+      - name: Kör skrapan
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          VS_TOKEN: ${{ secrets.VS_TOKEN }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python radar.py $ARGS
