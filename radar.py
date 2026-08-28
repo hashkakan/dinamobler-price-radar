@@ -57,6 +57,7 @@ PR_HEADERS = {
 # Produktlänk på sökträffsidan: /pl/343-{ID}/Kategori/Namn-priser
 RE_PRODUCT_LINK = re.compile(r'/pl/\d+-\d+/[^"\'\s<>]*?-priser')
 RE_LDJSON = re.compile(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', re.S | re.I)
+RE_INITIAL_PAYLOAD = re.compile(r'<script[^>]*id="initial_payload"[^>]*>(.*?)</script>', re.S | re.I)
 
 
 def log(msg: str) -> None:
@@ -78,11 +79,14 @@ def _to_float(v):
 def fetch_catalog(session, only_ean: bool = True, limit=None):
     """Generator: produkter {id, name, sku, ean, price, cost, ...} sida för sida."""
     offset, page_size, yielded = 0, 100, 0
+    # Token skickas som header, aldrig som query-parameter: URL:er hamnar i
+    # proxy- och serverloggar, headers gör det inte.
+    headers = {"X-VS-Token": VS_TOKEN}
     while True:
-        params = {"token": VS_TOKEN, "limit": page_size, "offset": offset}
+        params = {"limit": page_size, "offset": offset}
         if only_ean:
             params["only_ean"] = 1
-        r = session.get(API_PRODUCTS, params=params, timeout=30)
+        r = session.get(API_PRODUCTS, params=params, headers=headers, timeout=30)
         r.raise_for_status()
         data = r.json()
         rows = data.get("products", [])
@@ -104,8 +108,13 @@ def fetch_catalog(session, only_ean: bool = True, limit=None):
 # 2. PriceRunner: hitta produktsidan + läs billigaste pris
 # --------------------------------------------------------------------------- #
 def pr_find_product_url(session, ean: str, name: str):
-    """Sök primärt på EAN, sekundärt på namn. Returnerar /pl/-URL eller None."""
-    for query in (ean, name):
+    """Sök primärt på EAN, sekundärt på namn.
+
+    Returnerar (url, matched_by) eller None. Namnträffar märks som "name":
+    PriceRunner ger ingen EAN på produktsidan, så en namnsökning kan landa på
+    fel vara. Den osäkerheten ska synas i datan, inte döljas.
+    """
+    for query, how in ((ean, "ean"), (name, "name")):
         if not query:
             continue
         try:
@@ -114,22 +123,70 @@ def pr_find_product_url(session, ean: str, name: str):
                 continue
             m = RE_PRODUCT_LINK.search(r.text)
             if m:
-                return PR_BASE + m.group(0)
+                return PR_BASE + m.group(0), how
         except Exception as e:
             log(f"  PR-sök fel ({query}): {e}")
     return None
 
 
-def pr_lowest_price(session, url: str):
-    """Läs JSON-LD AggregateOffer på produktsidan. Returnerar dict eller None."""
-    try:
-        r = session.get(url, headers=PR_HEADERS, timeout=25)
-        if r.status_code != 200:
-            return None
-        html = r.text
-    except Exception as e:
-        log(f"  PR-produkt fel: {e}")
+def _offers_from_payload(html: str):
+    """Läs erbjudandena ur den inbäddade app-staten.
+
+    PriceRunner renderar sedan 2026 priserna klientsida. Produktsidans enda
+    JSON-LD-block är numera en BreadcrumbList utan AggregateOffer, vilket är
+    varför den gamla skrapan slutade hitta träffar. Priserna ligger i stället
+    i <script id="initial_payload"> under queryn "product-detail-offers".
+    """
+    m = RE_INITIAL_PAYLOAD.search(html)
+    if not m:
         return None
+    try:
+        payload = json.loads(m.group(1).strip())
+    except Exception:
+        return None
+
+    # En sida kan innehålla FLERA "product-detail-offers"-queries, där den
+    # första ibland är tom och en senare bär de riktiga erbjudandena. Samla
+    # därför in från allihop innan vi väljer – att returnera på den första
+    # missar annars produkter som faktiskt har ett pris.
+    priced, merchants, count = [], {}, 0
+    for q in (payload.get("__DEHYDRATED_QUERY_STATE__") or {}).get("queries") or []:
+        key = q.get("queryKey")
+        if not (isinstance(key, list) and key and key[0] == "product-detail-offers"):
+            continue
+
+        data = (q.get("state") or {}).get("data") or {}
+        merchants.update(data.get("merchants") or {})
+        count = max(count, int(((data.get("offersSummary") or {})
+                                .get("nationalOffer") or {}).get("count") or 0))
+
+        for o in data.get("offers") or []:
+            amount = _to_float((o.get("price") or {}).get("amount"))
+            if amount and not any(o.get("id") == prev.get("id") for _, prev in priced):
+                priced.append((amount, o))
+
+    if not priced:
+        return None
+
+    priced.sort(key=lambda t: t[0])
+    # Billigaste priset en kund faktiskt kan handla till väger tyngst. Finns
+    # inget i lager rapporterar vi ändå det lägsta, men med sann lagerstatus –
+    # prismotorn sållar själv bort OUT_OF_STOCK innan den sätter priser.
+    in_stock = [t for t in priced if t[1].get("stockStatus") == "IN_STOCK"]
+    low, best = (in_stock or priced)[0]
+
+    status = str(best.get("stockStatus") or "")
+    return {
+        "low": low,
+        "high": priced[-1][0],
+        "count": count or len(priced),
+        "stock": status if status in ("IN_STOCK", "OUT_OF_STOCK") else "UNKNOWN",
+        "merchant": str((merchants.get(str(best.get("merchantId"))) or {}).get("name") or ""),
+    }
+
+
+def _offers_from_ldjson(html: str):
+    """Reserv: gamla JSON-LD-vägen, om PriceRunner skulle återinföra den."""
     for block in RE_LDJSON.findall(html):
         try:
             data = json.loads(block.strip())
@@ -146,10 +203,27 @@ def pr_lowest_price(session, url: str):
                 "low": low,
                 "high": _to_float(offers.get("highPrice")),
                 "count": int(offers.get("offerCount") or 1),
-                "avail": str(offers.get("availability") or ""),
-                "url": url,
+                "stock": "IN_STOCK" if "InStock" in str(offers.get("availability") or "") else "UNKNOWN",
+                "merchant": "",
             }
     return None
+
+
+def pr_lowest_price(session, url: str):
+    """Billigaste konkurrentpriset på en PriceRunner-produktsida, eller None."""
+    try:
+        r = session.get(url, headers=PR_HEADERS, timeout=25)
+        if r.status_code != 200:
+            return None
+        html = r.text
+    except Exception as e:
+        log(f"  PR-produkt fel: {e}")
+        return None
+
+    info = _offers_from_payload(html) or _offers_from_ldjson(html)
+    if info:
+        info["url"] = url
+    return info
 
 
 # --------------------------------------------------------------------------- #
@@ -186,21 +260,23 @@ def main():
     session = requests.Session()
     log(f"Startar Price Radar mot {SITE_URL} (dry_run={args.dry_run})")
 
-    buffer, stats = [], {"produkter": 0, "med_traff": 0, "observationer": 0, "sparade": 0}
+    buffer, stats = [], {"produkter": 0, "med_traff": 0, "via_namn": 0,
+                         "observationer": 0, "sparade": 0}
 
     for p in fetch_catalog(session, only_ean=True, limit=args.limit):
         stats["produkter"] += 1
         ean, name = str(p["ean"]), p.get("name", "")
-        url = pr_find_product_url(session, ean, name)
+        found = pr_find_product_url(session, ean, name)
         time.sleep(args.sleep + random.uniform(0, 0.6))   # artig mot PriceRunner
-        if not url:
+        if not found:
             continue
+        url, matched_by = found
         info = pr_lowest_price(session, url)
         time.sleep(args.sleep + random.uniform(0, 0.6))
         if not info or not info["low"]:
             continue
         stats["med_traff"] += 1
-        stock = "IN_STOCK" if "InStock" in info["avail"] else "UNKNOWN"
+        stock = info["stock"]
         buffer.append({
             "product_id": int(p["id"]),
             "sku": p.get("sku", ""),
@@ -212,11 +288,15 @@ def main():
             "price": info["low"],
             "currency": "SEK",
             "stock_status": stock,
-            "matched_by": "ean",
+            "matched_by": matched_by,
             "observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         })
         stats["observationer"] += 1
-        log(f"  {name[:38]:38} EAN {ean}: lägst {info['low']:.0f} kr ({info['count']} butiker)")
+        stats["via_namn"] += 1 if matched_by == "name" else 0
+        butik = f" hos {info['merchant']}" if info.get("merchant") else ""
+        flagga = "" if matched_by == "ean" else "  [OSÄKER: namnmatchad]"
+        log(f"  {name[:38]:38} EAN {ean}: lägst {info['low']:.0f} kr "
+            f"({info['count']} butiker{butik}){flagga}")
 
         if not args.dry_run and len(buffer) >= args.batch:
             stats["sparade"] += post_observations(session, buffer)
