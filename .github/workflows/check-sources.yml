@@ -1,0 +1,22 @@
+name: Granska priskällor
+
+on:
+  workflow_dispatch:
+    inputs:
+      domains:
+        description: "Konkurrentdomäner, kommaseparerade (t.ex. trademax.se,mio.se,em.se)"
+        required: true
+        default: "trademax.se"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Granska
+        run: python check_sources.py "${{ github.event.inputs.domains }}"
