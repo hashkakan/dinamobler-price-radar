@@ -64,6 +64,11 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def _page_title(html: str) -> str:
+    m = re.search(r'<title[^>]*>(.*?)</title>', html, re.S | re.I)
+    return re.sub(r'\s+', ' ', m.group(1)).strip()[:80] if m else ""
+
+
 def _to_float(v):
     try:
         if isinstance(v, str):
@@ -120,10 +125,16 @@ def pr_find_product_url(session, ean: str, name: str):
         try:
             r = session.get(PR_RESULTS, headers=PR_HEADERS, params={"q": query}, timeout=25)
             if r.status_code != 200:
+                # Tyst hoppa aldrig över detta: det är så här ett WAF-block ser
+                # ut, och utan loggen ser en blockerad körning likadan ut som
+                # en körning där ingen konkurrent råkar sälja varan.
+                log(f"  PR-sök {how}={query!r}: HTTP {r.status_code} ({len(r.content)} b)")
                 continue
             m = RE_PRODUCT_LINK.search(r.text)
             if m:
                 return PR_BASE + m.group(0), how
+            log(f"  PR-sök {how}={query!r}: HTTP 200 men ingen produktlänk "
+                f"({len(r.content)} b, titel: {_page_title(r.text)!r})")
         except Exception as e:
             log(f"  PR-sök fel ({query}): {e}")
     return None
