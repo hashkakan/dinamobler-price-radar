@@ -123,24 +123,35 @@ def produkt_ur_jsonld(html: str):
 
 
 def granska(session, doman: str) -> dict:
-    doman = doman.strip().lower().removeprefix("http://").removeprefix("https://").strip("/")
+    rå = doman.strip().lower().removeprefix("http://").removeprefix("https://").strip("/")
+    # Listan kan innehålla sökväg (bolia.com/sv-se) – behåll bara värdnamnet.
+    doman = rå.split("/")[0]
     if not doman:
         return {}
-    bas = f"https://www.{doman}" if not doman.startswith("www.") else f"https://{doman}"
-    res = {"doman": doman, "verdikt": "?", "not": ""}
+    res = {"doman": rå, "verdikt": "?", "not": ""}
 
-    # 1. Nåbarhet
-    r, fel = hamta(session, bas + "/")
-    time.sleep(PAUS)
-    if fel:
-        res.update(verdikt="EJ NÅBAR", **{"not": fel})
+    # 1. Nåbarhet. Alla sajter använder inte www, så prova båda innan vi
+    # dömer ut den – annars blir "ingen www-post" felaktigt "EJ NÅBAR".
+    varianter = ([f"https://{doman}"] if doman.startswith("www.")
+                 else [f"https://www.{doman}", f"https://{doman}"])
+    bas, r, fel = None, None, None
+    for kandidat in varianter:
+        r, fel = hamta(session, kandidat + "/")
+        time.sleep(PAUS)
+        if r is not None and r.status_code == 200 and len(r.content) >= 20000:
+            bas = kandidat
+            break
+    if bas is None:
+        if r is None:
+            res.update(verdikt="EJ NÅBAR", **{"not": fel or "inget svar"})
+        else:
+            res.update(verdikt="BLOCKERAD", http=r.status_code, storlek=len(r.content),
+                       **{"not": f"HTTP {r.status_code}, {len(r.content)} b – ser ut som bot-utmaning"})
         return res
+
     res["http"] = r.status_code
     res["storlek"] = len(r.content)
-    if r.status_code != 200 or len(r.content) < 20000:
-        res.update(verdikt="BLOCKERAD",
-                   **{"not": f"HTTP {r.status_code}, {len(r.content)} b – ser ut som bot-utmaning"})
-        return res
+    res["bas"] = bas
 
     # 2. robots.txt
     rr, _ = hamta(session, bas + "/robots.txt")
