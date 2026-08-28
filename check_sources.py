@@ -124,6 +124,45 @@ def interna_lankar(html: str, bas_url: str) -> list:
     return ut
 
 
+def giltig_ean(kod) -> bool:
+    """Äkta EAN-8/12/13/14 med korrekt kontrollsiffra.
+
+    Prefix 20–29 förkastas: GS1 reserverar dem för butiksintern numrering
+    (Svenska Hem använder t.ex. 2900001947671). Två butiker kan ha samma
+    sådana siffror på helt olika varor, så de får aldrig matcha produkter.
+    """
+    s = re.sub(r"\D", "", str(kod or ""))
+    if len(s) not in (8, 12, 13, 14):
+        return False
+    if s.startswith(("2", "02")) and len(s) == 13:
+        return False
+    if len(set(s)) == 1:
+        return False
+    siffror = [int(c) for c in s]
+    kontroll = siffror.pop()
+    summa = 0
+    for i, d in enumerate(reversed(siffror)):
+        summa += d * (3 if i % 2 == 0 else 1)
+    return (10 - summa % 10) % 10 == kontroll
+
+
+def hitta_ean(html: str):
+    """Letar EAN/GTIN överallt sajter brukar lägga det – inte bara i JSON-LD."""
+    monster = [
+        r'itemprop="(?:gtin13|gtin14|gtin12|gtin8|gtin)"[^>]*content="([^"]+)"',
+        r'"(?:gtin13|gtin14|gtin12|gtin8|gtin|ean|EAN|barcode)"\s*:\s*"?(\d{8,14})"?',
+        r'\b(?:gtin|ean|barcode)"?\s*:\s*"(\d{8,14})"',
+        r'data-(?:ean|gtin|barcode)="(\d{8,14})"',
+        r'<meta[^>]+name="(?:ean|gtin)"[^>]+content="(\d{8,14})"',
+        r'(?:EAN|GTIN|Streckkod|Artikelnummer)[\s:</a-zA-Z>-]{0,40}?(\d{12,14})\b',
+    ]
+    for p in monster:
+        for kod in re.findall(p, html, re.I):
+            if giltig_ean(kod):
+                return re.sub(r"\D", "", kod)
+    return None
+
+
 def _ar_produkt(obj) -> bool:
     """@type kan vara "Product", en lista, eller en URL-form av samma sak."""
     t = obj.get("@type") if isinstance(obj, dict) else None
@@ -166,6 +205,7 @@ def _produkt_i_trad(nod):
                     "valuta": e.get("priceCurrency") or "",
                     "ean": nod.get("gtin13") or nod.get("gtin") or nod.get("gtin14")
                            or nod.get("gtin12") or nod.get("gtin8"),
+                    "_html": None,
                     "sku": nod.get("sku") or nod.get("mpn"),
                 }
 
@@ -194,11 +234,7 @@ def _ur_microdata(html: str):
         return t.group(1) if t else None
 
     valuta = attr("priceCurrency") or ""
-    ean = attr("gtin13") or attr("gtin") or attr("gtin14")
-    if not ean:
-        # Många sajter lägger produktdatan i en JS-blob i stället för i taggar.
-        t = re.search(r'\bgtin"?\s*:\s*"(\d{8,14})"', html)
-        ean = t.group(1) if t else None
+    ean = hitta_ean(html)
     namn = attr("name") or ""
     if not namn:
         t = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
@@ -220,7 +256,11 @@ def produkt_ur_jsonld(html: str):
             continue
         träff = _produkt_i_trad(data)
         if träff:
+            träff.pop("_html", None)
             träff.setdefault("kalla", "json-ld")
+            # JSON-LD saknar ofta gtin även när sidan bär EAN någon annanstans.
+            if not träff.get("ean") or not giltig_ean(träff["ean"]):
+                träff["ean"] = hitta_ean(html)
             return träff
     return _ur_microdata(html)
 
