@@ -63,7 +63,17 @@ def fetch_catalog(session, only_ean: bool = False, limit=None) -> list:
             params["only_ean"] = 1
         r = session.get(API_PRODUCTS, params=params, headers=headers, timeout=30)
         r.raise_for_status()
-        data = r.json()
+        try:
+            data = r.json()
+        except ValueError:
+            # HTTP 200 med icke-JSON betyder oftast en cachad HTML-sida eller
+            # ett WP-fel som renderats som sida. Visa vad vi faktiskt fick –
+            # ett rått JSONDecodeError säger ingenting om orsaken.
+            log(f"FEL: svar utan JSON från katalogen (offset={offset}).")
+            log(f"     HTTP {r.status_code}, {len(r.content)} b, "
+                f"content-type={r.headers.get('content-type','?')}")
+            log(f"     början: {r.text[:200]!r}")
+            raise SystemExit(1)
         rader = data.get("products", [])
         if not rader:
             break

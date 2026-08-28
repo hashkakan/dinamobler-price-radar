@@ -41,68 +41,31 @@ RE_LDJSON = re.compile(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', 
 RE_LOC = re.compile(r'<loc>([^<]+)</loc>', re.I)
 
 
-def _to_float(v):
-    """Svenska priser skrivs "1 234,50" – normalisera innan tolkning."""
-    try:
-        if isinstance(v, str):
-            v = v.replace("\xa0", "").replace(" ", "").replace(",", ".")
-        return float(v)
-    except (TypeError, ValueError):
-        return None
+# Utvinning av pris/EAN och robots-tolkning delas med radar.py – logiken
+# kostade sex buggfixar att få rätt och ska inte finnas i två kopior.
+from extract import (  # noqa: E402
+    to_float as _to_float,
+    giltig_ean,
+    hitta_ean,
+    produkt_ur_sida as produkt_ur_jsonld,
+    las_robots,
+    tillaten,
+    ASSET_SUFFIX,
+)
 
 
 def hamta(session, url, timeout=25):
     try:
-        r = session.get(url, headers=HEADERS, timeout=timeout)
-        return r, None
+        return session.get(url, headers=HEADERS, timeout=timeout), None
     except Exception as e:
         return None, f"{type(e).__name__}: {str(e)[:60]}"
 
 
-def las_robots(text: str):
-    """Returnerar (disallow-regler för *, sitemap-URL:er)."""
-    disallow, sitemaps, aktuell = [], [], None
-    rader = text.splitlines()
-    for i, rad in enumerate(rader):
-        s = rad.strip()
-        low = s.lower()
-        if low.startswith("user-agent:"):
-            aktuell = s.split(":", 1)[1].strip()
-        elif low.startswith("sitemap:"):
-            varde = s.split(":", 1)[1].strip()
-            # Vissa sajter (Nordiska Rum) bryter direktivet över två rader:
-            # "Sitemap:" på en rad och URL:en på nästa. Ett tomt värde här är
-            # inte "ingen sitemap" – titta på raden efter.
-            if not varde:
-                for nasta in rader[i + 1:i + 3]:
-                    n = nasta.strip()
-                    if n.lower().startswith("http"):
-                        varde = n
-                        break
-            if varde:
-                sitemaps.append(varde)
-        elif low.startswith("disallow:") and aktuell == "*":
-            disallow.append(s.split(":", 1)[1].strip())
-    return disallow, sitemaps
-
-
-def tillaten(sokvag: str, disallow: list) -> bool:
-    """Enkel robots-matchning: prefix, med * som jokertecken."""
-    for regel in disallow:
-        if not regel:
-            continue
-        m = re.escape(regel).replace(r"\*", ".*")
-        if re.match(m, sokvag):
-            return False
-    return True
-
-
 def interna_lankar(html: str, bas_url: str) -> list:
-    """Länkar på sidan som pekar djupare in på samma domän – produktkandidater."""
+    """Länkar på sidan som kan vara produktsidor."""
     bas = urllib.parse.urlparse(bas_url)
     # Produkten ligger ofta på SAMMA djup som kategorin – sista segmentet byts
-    # bara ut. Kräv därför inte "djupare", bara "minst lika djupt och inte
-    # sidan vi redan står på".
+    # bara ut. Kräv därför inte "djupare", bara "minst lika djupt".
     djup = bas.path.rstrip("/").count("/")
     ut, sedda = [], set()
     for href in re.findall(r'href="([^"#?]+)"', html):
@@ -110,159 +73,16 @@ def interna_lankar(html: str, bas_url: str) -> list:
         d = urllib.parse.urlparse(full)
         if d.netloc != bas.netloc or full in sedda or d.path == bas.path:
             continue
-        # Utan det här filtret går försöken åt till JS-chunkar och bilder i
+        # Utan assetfiltret går försöken åt till JS-chunkar och bilder i
         # stället för produktsidor – vilket får sajten att se prislös ut.
-        if re.search(r"\.(js|mjs|css|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot"
-                     r"|xml|json|pdf|zip|mp4|webm)$", d.path, re.I):
+        if ASSET_SUFFIX.search(d.path):
             continue
         if d.path.rstrip("/").count("/") < djup:
             continue
         sedda.add(full)
         ut.append(urllib.parse.unquote(full))
-    # Länkar som ser ut som produkter först (artikelnummer i sluget).
     ut.sort(key=lambda u: 0 if re.search(r"-p\d{4,}|/p/|\d{6,}", u) else 1)
     return ut
-
-
-def giltig_ean(kod) -> bool:
-    """Äkta EAN-8/12/13/14 med korrekt kontrollsiffra.
-
-    Prefix 20–29 förkastas: GS1 reserverar dem för butiksintern numrering
-    (Svenska Hem använder t.ex. 2900001947671). Två butiker kan ha samma
-    sådana siffror på helt olika varor, så de får aldrig matcha produkter.
-    """
-    s = re.sub(r"\D", "", str(kod or ""))
-    if len(s) not in (8, 12, 13, 14):
-        return False
-    if s.startswith(("2", "02")) and len(s) == 13:
-        return False
-    if len(set(s)) == 1:
-        return False
-    siffror = [int(c) for c in s]
-    kontroll = siffror.pop()
-    summa = 0
-    for i, d in enumerate(reversed(siffror)):
-        summa += d * (3 if i % 2 == 0 else 1)
-    return (10 - summa % 10) % 10 == kontroll
-
-
-def hitta_ean(html: str):
-    """Letar EAN/GTIN överallt sajter brukar lägga det – inte bara i JSON-LD."""
-    monster = [
-        r'itemprop="(?:gtin13|gtin14|gtin12|gtin8|gtin)"[^>]*content="([^"]+)"',
-        r'"(?:gtin13|gtin14|gtin12|gtin8|gtin|ean|EAN|barcode)"\s*:\s*"?(\d{8,14})"?',
-        r'\b(?:gtin|ean|barcode)"?\s*:\s*"(\d{8,14})"',
-        r'data-(?:ean|gtin|barcode)="(\d{8,14})"',
-        r'<meta[^>]+name="(?:ean|gtin)"[^>]+content="(\d{8,14})"',
-        r'(?:EAN|GTIN|Streckkod|Artikelnummer)[\s:</a-zA-Z>-]{0,40}?(\d{12,14})\b',
-    ]
-    for p in monster:
-        for kod in re.findall(p, html, re.I):
-            if giltig_ean(kod):
-                return re.sub(r"\D", "", kod)
-    return None
-
-
-def _ar_produkt(obj) -> bool:
-    """@type kan vara "Product", en lista, eller en URL-form av samma sak."""
-    t = obj.get("@type") if isinstance(obj, dict) else None
-    typer = t if isinstance(t, list) else [t]
-    return any(isinstance(x, str) and x.split("/")[-1] == "Product" for x in typer)
-
-
-def _produkt_i_trad(nod):
-    """Letar rekursivt efter ett Product-objekt med pris.
-
-    Yoast och de flesta WooCommerce-sajter lägger produkten i en `@graph`-array
-    i stället för på toppnivån. En parser som bara tittar överst missar dem och
-    rapporterar felaktigt att sajten saknar pris.
-    """
-    if isinstance(nod, list):
-        for x in nod:
-            träff = _produkt_i_trad(x)
-            if träff:
-                return träff
-        return None
-    if not isinstance(nod, dict):
-        return None
-
-    if _ar_produkt(nod):
-        erbjudanden = nod.get("offers")
-        if isinstance(erbjudanden, dict):
-            erbjudanden = [erbjudanden]
-        for e in erbjudanden or []:
-            if not isinstance(e, dict):
-                continue
-            pris = e.get("price")
-            if pris is None and isinstance(e.get("priceSpecification"), dict):
-                pris = e["priceSpecification"].get("price")
-            if pris is None:
-                pris = e.get("lowPrice")
-            if pris is not None:
-                return {
-                    "namn": str(nod.get("name") or "")[:50],
-                    "pris": pris,
-                    "valuta": e.get("priceCurrency") or "",
-                    "ean": nod.get("gtin13") or nod.get("gtin") or nod.get("gtin14")
-                           or nod.get("gtin12") or nod.get("gtin8"),
-                    "_html": None,
-                    "sku": nod.get("sku") or nod.get("mpn"),
-                }
-
-    for v in nod.values():
-        if isinstance(v, (dict, list)):
-            träff = _produkt_i_trad(v)
-            if träff:
-                return träff
-    return None
-
-
-def _ur_microdata(html: str):
-    """Schema.org som HTML-attribut i stället för JSON-LD (vanligt i Magento)."""
-    m = (re.search(r'itemprop="price"[^>]*content="([^"]+)"', html)
-         or re.search(r'content="([^"]+)"[^>]*itemprop="price"', html)
-         or re.search(r'property="product:price:amount"[^>]*content="([^"]+)"', html)
-         or re.search(r'itemprop="price"[^>]*>\s*([\d\s.,]+)\s*<', html))
-    if not m:
-        return None
-    pris = _to_float(m.group(1))
-    if pris is None:
-        return None
-
-    def attr(namn):
-        t = re.search(rf'itemprop="{namn}"[^>]*content="([^"]+)"', html)
-        return t.group(1) if t else None
-
-    valuta = attr("priceCurrency") or ""
-    ean = hitta_ean(html)
-    namn = attr("name") or ""
-    if not namn:
-        t = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
-        namn = re.sub(r"\s+", " ", t.group(1)).strip() if t else ""
-    return {"namn": namn[:50], "pris": pris, "valuta": valuta,
-            "ean": ean, "sku": attr("sku") or attr("mpn"), "kalla": "microdata"}
-
-
-def produkt_ur_jsonld(html: str):
-    """Namn/pris/EAN ur sidans strukturerade data, oavsett vilken form den har.
-
-    Att bara läsa JSON-LD ger falska negativ: Nordiska Rum har noll JSON-LD-block
-    men bär både pris och äkta EAN i microdata respektive en inbäddad datablob.
-    """
-    for block in RE_LDJSON.findall(html):
-        try:
-            data = json.loads(block.strip())
-        except Exception:
-            continue
-        träff = _produkt_i_trad(data)
-        if träff:
-            träff.pop("_html", None)
-            träff.setdefault("kalla", "json-ld")
-            # JSON-LD saknar ofta gtin även när sidan bär EAN någon annanstans.
-            if not träff.get("ean") or not giltig_ean(träff["ean"]):
-                träff["ean"] = hitta_ean(html)
-            return träff
-    return _ur_microdata(html)
 
 
 def granska(session, doman: str) -> dict:
