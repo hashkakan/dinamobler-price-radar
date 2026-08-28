@@ -88,6 +88,11 @@ def interna_lankar(html: str, bas_url: str) -> list:
         d = urllib.parse.urlparse(full)
         if d.netloc != bas.netloc or full in sedda or d.path == bas.path:
             continue
+        # Utan det här filtret går försöken åt till JS-chunkar och bilder i
+        # stället för produktsidor – vilket får sajten att se prislös ut.
+        if re.search(r"\.(js|mjs|css|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot"
+                     r"|xml|json|pdf|zip|mp4|webm)$", d.path, re.I):
+            continue
         if d.path.rstrip("/").count("/") < djup:
             continue
         sedda.add(full)
@@ -97,28 +102,69 @@ def interna_lankar(html: str, bas_url: str) -> list:
     return ut
 
 
+def _ar_produkt(obj) -> bool:
+    """@type kan vara "Product", en lista, eller en URL-form av samma sak."""
+    t = obj.get("@type") if isinstance(obj, dict) else None
+    typer = t if isinstance(t, list) else [t]
+    return any(isinstance(x, str) and x.split("/")[-1] == "Product" for x in typer)
+
+
+def _produkt_i_trad(nod):
+    """Letar rekursivt efter ett Product-objekt med pris.
+
+    Yoast och de flesta WooCommerce-sajter lägger produkten i en `@graph`-array
+    i stället för på toppnivån. En parser som bara tittar överst missar dem och
+    rapporterar felaktigt att sajten saknar pris.
+    """
+    if isinstance(nod, list):
+        for x in nod:
+            träff = _produkt_i_trad(x)
+            if träff:
+                return träff
+        return None
+    if not isinstance(nod, dict):
+        return None
+
+    if _ar_produkt(nod):
+        erbjudanden = nod.get("offers")
+        if isinstance(erbjudanden, dict):
+            erbjudanden = [erbjudanden]
+        for e in erbjudanden or []:
+            if not isinstance(e, dict):
+                continue
+            pris = e.get("price")
+            if pris is None and isinstance(e.get("priceSpecification"), dict):
+                pris = e["priceSpecification"].get("price")
+            if pris is None:
+                pris = e.get("lowPrice")
+            if pris is not None:
+                return {
+                    "namn": str(nod.get("name") or "")[:50],
+                    "pris": pris,
+                    "valuta": e.get("priceCurrency") or "",
+                    "ean": nod.get("gtin13") or nod.get("gtin") or nod.get("gtin14")
+                           or nod.get("gtin12") or nod.get("gtin8"),
+                    "sku": nod.get("sku") or nod.get("mpn"),
+                }
+
+    for v in nod.values():
+        if isinstance(v, (dict, list)):
+            träff = _produkt_i_trad(v)
+            if träff:
+                return träff
+    return None
+
+
 def produkt_ur_jsonld(html: str):
-    """Plockar ut namn/pris/EAN ur ett Product-block, om det finns."""
+    """Plockar ut namn/pris/EAN ur ett Product-block, var det än ligger."""
     for block in RE_LDJSON.findall(html):
         try:
             data = json.loads(block.strip())
         except Exception:
             continue
-        for obj in (data if isinstance(data, list) else [data]):
-            if not isinstance(obj, dict) or obj.get("@type") != "Product":
-                continue
-            erbjudanden = obj.get("offers")
-            if isinstance(erbjudanden, dict):
-                erbjudanden = [erbjudanden]
-            for e in erbjudanden or []:
-                if isinstance(e, dict) and e.get("price") is not None:
-                    return {
-                        "namn": str(obj.get("name") or "")[:50],
-                        "pris": e.get("price"),
-                        "valuta": e.get("priceCurrency"),
-                        "ean": obj.get("gtin13") or obj.get("gtin") or obj.get("gtin14"),
-                        "sku": obj.get("sku"),
-                    }
+        träff = _produkt_i_trad(data)
+        if träff:
+            return träff
     return None
 
 
