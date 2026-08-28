@@ -19,6 +19,9 @@ concurrency:
   group: price-radar
   cancel-in-progress: false
 
+permissions:
+  contents: write             # behövs av keepalive-steget nedan
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -42,3 +45,24 @@ jobs:
           if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"; fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           python radar.py $ARGS
+
+      # GitHub stänger av schemalagda workflows efter 60 dagars inaktivitet i repot,
+      # tyst och utan varning. Workflow-körningar räknas INTE som aktivitet – bara
+      # commits gör det. Utan det här steget skulle schemat dö av sig självt i höst,
+      # precis som launchd-jobbet gjorde. Vi commitar därför en tidsstämpel var 45:e dag.
+      - name: Håll schemat vid liv
+        if: always() && github.event_name == 'schedule'
+        run: |
+          ALDER=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Senaste commit är $ALDER dagar gammal."
+          if [ "$ALDER" -ge 45 ]; then
+            git config user.name  "price-radar-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive
+            git add .keepalive
+            git commit -m "keepalive: håller det nattliga schemat aktivt"
+            git push
+            echo "Keepalive-commit pushad."
+          else
+            echo "Ingen keepalive behövs ännu."
+          fi
