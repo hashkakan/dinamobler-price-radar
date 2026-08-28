@@ -41,6 +41,16 @@ RE_LDJSON = re.compile(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', 
 RE_LOC = re.compile(r'<loc>([^<]+)</loc>', re.I)
 
 
+def _to_float(v):
+    """Svenska priser skrivs "1 234,50" – normalisera innan tolkning."""
+    try:
+        if isinstance(v, str):
+            v = v.replace("\xa0", "").replace(" ", "").replace(",", ".")
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def hamta(session, url, timeout=25):
     try:
         r = session.get(url, headers=HEADERS, timeout=timeout)
@@ -52,13 +62,25 @@ def hamta(session, url, timeout=25):
 def las_robots(text: str):
     """Returnerar (disallow-regler för *, sitemap-URL:er)."""
     disallow, sitemaps, aktuell = [], [], None
-    for rad in text.splitlines():
+    rader = text.splitlines()
+    for i, rad in enumerate(rader):
         s = rad.strip()
         low = s.lower()
         if low.startswith("user-agent:"):
             aktuell = s.split(":", 1)[1].strip()
         elif low.startswith("sitemap:"):
-            sitemaps.append(s.split(":", 1)[1].strip())
+            varde = s.split(":", 1)[1].strip()
+            # Vissa sajter (Nordiska Rum) bryter direktivet över två rader:
+            # "Sitemap:" på en rad och URL:en på nästa. Ett tomt värde här är
+            # inte "ingen sitemap" – titta på raden efter.
+            if not varde:
+                for nasta in rader[i + 1:i + 3]:
+                    n = nasta.strip()
+                    if n.lower().startswith("http"):
+                        varde = n
+                        break
+            if varde:
+                sitemaps.append(varde)
         elif low.startswith("disallow:") and aktuell == "*":
             disallow.append(s.split(":", 1)[1].strip())
     return disallow, sitemaps
@@ -155,8 +177,42 @@ def _produkt_i_trad(nod):
     return None
 
 
+def _ur_microdata(html: str):
+    """Schema.org som HTML-attribut i stället för JSON-LD (vanligt i Magento)."""
+    m = (re.search(r'itemprop="price"[^>]*content="([^"]+)"', html)
+         or re.search(r'content="([^"]+)"[^>]*itemprop="price"', html)
+         or re.search(r'property="product:price:amount"[^>]*content="([^"]+)"', html)
+         or re.search(r'itemprop="price"[^>]*>\s*([\d\s.,]+)\s*<', html))
+    if not m:
+        return None
+    pris = _to_float(m.group(1))
+    if pris is None:
+        return None
+
+    def attr(namn):
+        t = re.search(rf'itemprop="{namn}"[^>]*content="([^"]+)"', html)
+        return t.group(1) if t else None
+
+    valuta = attr("priceCurrency") or ""
+    ean = attr("gtin13") or attr("gtin") or attr("gtin14")
+    if not ean:
+        # Många sajter lägger produktdatan i en JS-blob i stället för i taggar.
+        t = re.search(r'\bgtin"?\s*:\s*"(\d{8,14})"', html)
+        ean = t.group(1) if t else None
+    namn = attr("name") or ""
+    if not namn:
+        t = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+        namn = re.sub(r"\s+", " ", t.group(1)).strip() if t else ""
+    return {"namn": namn[:50], "pris": pris, "valuta": valuta,
+            "ean": ean, "sku": attr("sku") or attr("mpn"), "kalla": "microdata"}
+
+
 def produkt_ur_jsonld(html: str):
-    """Plockar ut namn/pris/EAN ur ett Product-block, var det än ligger."""
+    """Namn/pris/EAN ur sidans strukturerade data, oavsett vilken form den har.
+
+    Att bara läsa JSON-LD ger falska negativ: Nordiska Rum har noll JSON-LD-block
+    men bär både pris och äkta EAN i microdata respektive en inbäddad datablob.
+    """
     for block in RE_LDJSON.findall(html):
         try:
             data = json.loads(block.strip())
@@ -164,8 +220,9 @@ def produkt_ur_jsonld(html: str):
             continue
         träff = _produkt_i_trad(data)
         if träff:
+            träff.setdefault("kalla", "json-ld")
             return träff
-    return None
+    return _ur_microdata(html)
 
 
 def granska(session, doman: str) -> dict:
@@ -207,9 +264,13 @@ def granska(session, doman: str) -> dict:
     res["sitemaps"] = len(sitemaps)
 
     # 3. Sitemap – från robots, annars gissa standardplatsen
-    kandidater = list(sitemaps) or [bas + "/sitemap.xml"]
+    # Standardplatserna som reserv – ett trasigt sitemap-direktiv ska inte
+    # ensamt döma ut en sajt som saknar sitemap.
+    kandidater = [s for s in sitemaps if s.strip()]
+    kandidater += [bas + "/sitemap.xml", bas + "/sitemap_index.xml",
+                   bas + "/media/sitemap.xml"]
     url_lista = []
-    for sm in kandidater[:2]:
+    for sm in kandidater[:4]:
         sr, _ = hamta(session, sm, timeout=40)
         time.sleep(PAUS)
         if sr is None or sr.status_code != 200:
@@ -231,10 +292,17 @@ def granska(session, doman: str) -> dict:
                    **{"not": "hittade inga produkt-URL:er att utgå från"})
         return res
 
-    # 4. Produktsidor – djupast liggande URL:er först
-    url_lista.sort(key=lambda u: u.rstrip("/").count("/"), reverse=True)
+    # 4. Produktsidor. Djupet avslöjar inte var produkterna bor: hos Trademax
+    # ligger de djupt och kategorierna grunt, hos Magento-sajter tvärtom
+    # (/produktnamn.html i roten). Prova därför både de djupaste och ett
+    # spritt urval ur mitten – annars underkänns halva urvalet av sajter.
+    djupast = sorted(url_lista, key=lambda u: u.rstrip("/").count("/"), reverse=True)[:3]
+    mitten = url_lista[len(url_lista) // 2:][:200]
+    spritt = mitten[:: max(1, len(mitten) // 5)][:5]
+    kandidat_urler = list(dict.fromkeys(djupast + spritt))
+
     provade = 0
-    for u in url_lista[:MAX_PRODUKTFORSOK]:
+    for u in kandidat_urler[:MAX_PRODUKTFORSOK + 2]:
         sokvag = urllib.parse.urlparse(u).path
         if not tillaten(sokvag, disallow):
             continue
@@ -263,8 +331,8 @@ def granska(session, doman: str) -> dict:
                 res.update(verdikt="DUGER", exempel=träff, provad_url=lank)
                 return res
 
-    res.update(verdikt="INGET PRIS I JSON-LD",
-               **{"not": f"provade {provade} sidor utan Product-JSON-LD"})
+    res.update(verdikt="INGET PRIS HITTAT",
+               **{"not": f"provade {provade} sidor utan pris i strukturerad form"})
     return res
 
 
