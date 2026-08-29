@@ -183,6 +183,50 @@ def produkt_ur_sida(html: str):
     return träff
 
 
+def bulk_ean_priser(html: str, ref_ean: str | None, ref_pris: float | None):
+    """Alla EAN+pris-par på sidan, inte bara huvudproduktens.
+
+    Nordiska Rums produktsidor bär en datablob med gtin, pris och url_path för
+    både produkten och de relaterade – sex produkter per hämtning i stället för
+    en. Det är sexfaldig täckning för samma antal anrop.
+
+    MOMSFÄLLAN: blobbens pris är EXKLUSIVE moms. Sälen 46cm står som
+    `price:348` i blobben men 435 kr i sidans strukturerade data, och
+    348 × 1,25 = 435. Skickas blobpriserna in råa ser varje konkurrent 20 %
+    billigare ut än de är, och prismotorn sänker mot en fantasi.
+
+    Därför kalibrerar sidan sig själv: huvudproduktens kända, korrekta pris
+    delat med dess blobpris ger multiplikatorn för de övriga. Går kvoten inte
+    att räkna fram, eller ser den orimlig ut, hoppar vi över hela sidan hellre
+    än att gissa.
+    """
+    if not ref_ean or not ref_pris:
+        return []
+
+    par = {}
+    for m in re.finditer(r'\bgtin"?\s*:\s*"(\d{8,14})"', html, re.I):
+        fonster = html[max(0, m.start() - 700): m.end() + 700]
+        pris = re.search(r'\bprice"?\s*:\s*(\d+(?:\.\d+)?)', fonster)
+        if pris and m.group(1) not in par:
+            par[m.group(1)] = float(pris.group(1))
+
+    ref = re.sub(r"\D", "", str(ref_ean))
+    if ref not in par or par[ref] <= 0:
+        return []
+
+    kvot = ref_pris / par[ref]
+    # 1,00 (redan inkl. moms) eller ~1,25 (exkl.) är rimligt. Annat är okänt.
+    if not (0.95 <= kvot <= 1.30):
+        return []
+
+    ut = []
+    for ean, blobpris in par.items():
+        if ean == ref or not giltig_ean(ean) or blobpris <= 0:
+            continue
+        ut.append({"ean": ean, "pris": round(blobpris * kvot, 2)})
+    return ut
+
+
 def las_robots(text: str):
     """Returnerar (disallow-regler för *, sitemap-URL:er)."""
     disallow, sitemaps, aktuell = [], [], None

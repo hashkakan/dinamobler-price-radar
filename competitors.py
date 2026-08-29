@@ -227,6 +227,30 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
                      "sku": info.get("sku"), "pris": info["pris"],
                      "lager": info.get("lager")})
 
+        # Sidan bär ofta relaterade produkter med egen streckkod och eget pris.
+        # Att plocka dem också ger flera träffar per hämtning i stället för en.
+        for extra in extract.bulk_ean_priser(r.text, info.get("ean"), info.get("pris")):
+            träffad = index.per_ean.get(extra["ean"])
+            if not träffad:
+                continue
+            observationer.append({
+                "product_id": int(träffad["id"]),
+                "sku": träffad.get("sku", ""),
+                "ean": extra["ean"],
+                "source": doman,
+                "source_product": "",
+                "source_url": url[:1000],
+                "competitor": kalla["namn"],
+                "price": extra["pris"],
+                "currency": "SEK",
+                "stock_status": "UNKNOWN",
+                "matched_by": "ean",
+                "_sakerhet": 1.0,
+                "_roll": kalla.get("roll", "konkurrent"),
+            })
+            träffar_tot += 1
+            log(f"      {träffad['name'][:34]:34} {extra['pris']:>9.0f} kr  [via sidans data]")
+
         vår, hur, säkerhet = _matcha(info, kandidater, index)
         if not vår:
             post["matchad_id"] = None

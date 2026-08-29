@@ -123,9 +123,13 @@ def rensa_kollisioner(observationer: list, log) -> tuple[list, list]:
     SPRIDNING_TAK = 1.10   # >10 % mellan billigaste och dyrast = olika varor
 
     # A) En konkurrentsida får bara peka på en av våra produkter: den bäst matchade.
+    #    EAN-träffar undantas – en produktsida bär ofta relaterade produkter med
+    #    egna streckkoder, och olika EAN ÄR olika varor. Regeln finns för
+    #    namnmatchningar, där samma sida annars fångar upp flera av våra varianter.
     per_url = {}
     for o in observationer:
-        per_url.setdefault(o["source_url"], []).append(o)
+        nyckel = ("ean", o["product_id"]) if o["matched_by"] == "ean" else o["source_url"]
+        per_url.setdefault(nyckel, []).append(o)
     behall_a, slang = [], []
     for url, grupp in per_url.items():
         if len(grupp) == 1:
