@@ -14,6 +14,14 @@ on:
         description: "Torrkörning (skriv inget)"
         type: boolean
         default: false
+      sources:
+        description: "Bara dessa domäner, kommaseparerat (tomt = alla)"
+        required: false
+        default: ""
+      max_pages:
+        description: "Max produktsidor per konkurrent (tomt = 400)"
+        required: false
+        default: ""
 
 concurrency:
   group: price-radar
@@ -33,6 +41,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Indexet över konkurrenternas produktsidor byggs upp natt för natt.
+      # Utan det börjar varje körning om från noll och hinner bara 400 sidor
+      # per källa – Trademax ensam har 31 905 relevanta URL:er.
+      - name: Återställ index från förra natten
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: price-radar-state-${{ github.run_id }}
+          restore-keys: price-radar-state-
+
       - name: Installera beroenden
         run: pip install -r requirements.txt
 
@@ -44,7 +62,18 @@ jobs:
           ARGS=""
           if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"; fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ -n "${{ github.event.inputs.sources }}" ]; then ARGS="$ARGS --sources ${{ github.event.inputs.sources }}"; fi
+          if [ -n "${{ github.event.inputs.max_pages }}" ]; then ARGS="$ARGS --max-pages ${{ github.event.inputs.max_pages }}"; fi
           python radar.py $ARGS
+
+      # Sparas även om skrapningen bröts: halvfärdigt index är bättre än inget,
+      # och nästa natt fortsätter där den här slutade.
+      - name: Spara index till nästa natt
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: price-radar-state-${{ github.run_id }}
 
       # GitHub stänger av schemalagda workflows efter 60 dagars inaktivitet i repot,
       # tyst och utan varning. Workflow-körningar räknas INTE som aktivitet – bara

@@ -26,6 +26,7 @@ import unicodedata
 import urllib.parse
 
 import extract
+import state
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -183,22 +184,54 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         if träffar:
             rankade.append((träffar[0][1], u, träffar))
     rankade.sort(key=lambda t: t[0], reverse=True)
-    log(f"    {len(rankade)} URL:er liknar vårt sortiment; hämtar högst {max_sidor}")
+
+    minne = state.las(doman)
+    sidor = minne.setdefault("sidor", {})
+    log(f"    {len(rankade)} URL:er liknar vårt sortiment  |  minne: {state.sammanfatta(minne)}")
+
+    # Budgeten delas i två. Kända träffar måste ha aktuellt pris – ett gammalt
+    # pris är sämre än inget. Resten går till att utforska nytt, så täckningen
+    # växer natt för natt i stället för att stanna på samma 400 sidor.
+    nu = time.time()
+    att_uppdatera = [r for r in rankade
+                     if sidor.get(r[1], {}).get("matchad_id")
+                     and state.behover_hamtas(sidor.get(r[1]), nu)]
+    att_utforska = [r for r in rankade
+                    if not sidor.get(r[1], {}).get("matchad_id")
+                    and state.behover_hamtas(sidor.get(r[1]), nu)]
+
+    tak_uppdatera = min(len(att_uppdatera), int(max_sidor * 0.6))
+    ko = att_uppdatera[:tak_uppdatera]
+    ko += att_utforska[:max_sidor - len(ko)]
+    log(f"    hämtar {len(ko)}: {len(att_uppdatera[:tak_uppdatera])} kända träffar "
+        f"+ {len(ko) - len(att_uppdatera[:tak_uppdatera])} nya "
+        f"({len(att_utforska)} outforskade kvar)")
 
     observationer, hamtade, träffar_tot = [], 0, 0
-    for _, url, kandidater in rankade[:max_sidor]:
+    for _, url, kandidater in ko:
         r, fel = _hamta(session, url)
         time.sleep(paus)
         hamtade += 1
+        post = sidor.setdefault(url, {})
+        post["sedd"] = int(nu)
+
         if r is None or r.status_code != 200:
+            post["matchad_id"] = None
             continue
         info = extract.produkt_ur_sida(r.text)
         if not info or not info.get("pris"):
+            post["matchad_id"] = None
             continue
+
+        post.update({"namn": (info.get("namn") or "")[:120], "ean": info.get("ean"),
+                     "sku": info.get("sku"), "pris": info["pris"],
+                     "lager": info.get("lager")})
 
         vår, hur, säkerhet = _matcha(info, kandidater, index)
         if not vår:
+            post["matchad_id"] = None
             continue
+        post["matchad_id"] = int(vår["id"])
 
         träffar_tot += 1
         observationer.append({
@@ -219,7 +252,9 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         flagga = "" if hur == "ean" else f"  [namnmatch {säkerhet:.2f}]"
         log(f"      {vår['name'][:34]:34} {info['pris']:>9.0f} kr{flagga}")
 
-    log(f"    klart: {hamtade} sidor hämtade, {träffar_tot} träffar")
+    storlek = state.spara(doman, minne)
+    log(f"    klart: {hamtade} sidor hämtade, {träffar_tot} träffar  "
+        f"|  minne sparat: {state.sammanfatta(minne)} ({storlek // 1024} kB)")
     return observationer
 
 
