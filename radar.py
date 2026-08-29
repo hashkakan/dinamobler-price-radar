@@ -41,6 +41,7 @@ from pathlib import Path
 import requests
 
 import competitors
+import state
 
 SITE_URL = os.environ.get("SITE_URL", "https://dinamobler.se").rstrip("/")
 VS_TOKEN = os.environ.get("VS_TOKEN", "").strip()
@@ -193,6 +194,8 @@ def main():
     ap.add_argument("--max-pages", type=int, default=400,
                     help="Max produktsidor att hämta per konkurrent")
     ap.add_argument("--dry-run", action="store_true", help="Skriv inte till sajten")
+    ap.add_argument("--refresh-catalog", action="store_true",
+                    help="Tvinga omhämtning av katalogen (annars cache i 7 dygn)")
     ap.add_argument("--sleep", type=float, default=1.5,
                     help="Sekunder mellan anrop – vi är gäster på deras servrar")
     args = ap.parse_args()
@@ -204,11 +207,31 @@ def main():
     session = requests.Session()
     log(f"Startar Price Radar mot {SITE_URL} (dry_run={args.dry_run})")
 
-    katalog = fetch_catalog(session, only_ean=False, limit=args.limit)
-    log(f"Katalog: {len(katalog)} produkter")
+    # Katalogen läses ur cache när den är färsk nog. Att hämta om den varje
+    # körning kostar ~129 anrop mot butiken innan skrapningen ens börjat, och
+    # det var den lasten som fick Imunify360 att spärra runnerns IP 2026-08-29.
+    # Sortimentet ändras inte över natten; en vecka gammal katalog duger.
+    katalog, alder = state.las_katalog()
+    if katalog and alder < state.KATALOG_FARSK_DYGN and not args.refresh_catalog:
+        log(f"Katalog: {len(katalog)} produkter ur cache ({alder:.1f} dygn gammal)")
+    else:
+        skal = "tvingad uppdatering" if args.refresh_catalog else f"cache {alder:.0f} dygn gammal"
+        log(f"Hämtar katalogen från sajten ({skal})…")
+        try:
+            katalog = fetch_catalog(session, only_ean=False, limit=args.limit)
+            state.spara_katalog(katalog)
+            log(f"Katalog: {len(katalog)} produkter (sparad till cache)")
+        except SystemExit:
+            if not katalog:
+                raise
+            log(f"Kunde inte hämta katalogen – kör vidare på cachen "
+                f"({len(katalog)} produkter, {alder:.0f} dygn gammal)")
+
     if not katalog:
         log("Tom katalog – avbryter.")
         sys.exit(1)
+    if args.limit:
+        katalog = katalog[:args.limit]
 
     index = competitors.Katalogindex(katalog)
     med_ean = len(index.per_ean)

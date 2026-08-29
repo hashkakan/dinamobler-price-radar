@@ -70,6 +70,31 @@ def behover_hamtas(post: dict | None, nu: float | None = None) -> bool:
     return alder_dygn >= grans
 
 
+KATALOG_FIL = STATE_DIR / "katalog.json.gz"
+KATALOG_FARSK_DYGN = 7
+
+
+def las_katalog() -> tuple[list, float]:
+    """(produkter, ålder i dygn). Tom lista om cachen saknas eller är trasig."""
+    if not KATALOG_FIL.exists():
+        return [], 1e9
+    try:
+        with gzip.open(KATALOG_FIL, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        produkter = data.get("produkter") or []
+        alder = (time.time() - float(data.get("hamtad") or 0)) / 86400
+        return (produkter, alder) if produkter else ([], 1e9)
+    except Exception:
+        return [], 1e9
+
+
+def spara_katalog(produkter: list) -> None:
+    STATE_DIR.mkdir(exist_ok=True)
+    with gzip.open(KATALOG_FIL, "wt", encoding="utf-8") as fh:
+        json.dump({"hamtad": int(time.time()), "produkter": produkter},
+                  fh, ensure_ascii=False, separators=(",", ":"))
+
+
 def sammanfatta(state: dict) -> str:
     sidor = state.get("sidor", {})
     matchade = sum(1 for p in sidor.values() if p.get("matchad_id"))
