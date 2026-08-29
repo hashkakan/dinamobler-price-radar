@@ -4,12 +4,28 @@
     "roll: 'konkurrent' prissätts mot; 'leverantor' är referens (rekpris) och får",
     "ALDRIG driva prissänkningar – det vore att jaga sin egen leverantörs pris.",
     "koncern: sajter med samma koncern räknas som EN konkurrent i analysen.",
-    "ean: true = sajten publicerar äkta EAN → exakt matchning möjlig."
+    "ean: true = sajten publicerar äkta EAN → exakt matchning möjlig.",
+    "",
+    "Prövade och underkända, så de inte testas om i onödan (2026-08-29):",
+    "bramobler.se – 15 859 produkter i sitemap men produktsidorna svarar inte",
+    "  (HTTP 000 på flera försök). Störst överlapp av alla, 1 149 produkter –",
+    "  värd att prova igen om de öppnar upp.",
+    "furnroom.se – ingen sitemap.  buyersclub.se – blockerar molntrafik.",
+    "room99.se, norrmalmsmobler.se – inget pris i strukturerad form.",
+    "livello.se (f.d. First Kitchen) – granskningen gav falsk träff:",
+    "  'Möbler – 20 kr' är en kategorisida, inte en produkt."
   ],
   "kallor": [
     {"doman": "royaldesign.se",   "namn": "Royal Design",    "roll": "konkurrent",  "ean": true,  "aktiv": true},
     {"doman": "rum21.se",         "namn": "Rum21",           "roll": "konkurrent",  "ean": true,  "aktiv": true},
     {"doman": "nordiskarum.se",   "namn": "Nordiska Rum",    "roll": "konkurrent",  "ean": true,  "aktiv": true},
+    {"doman": "reformasthlm.se",  "namn": "Reforma STHLM",   "roll": "konkurrent",  "ean": true,  "aktiv": true,
+     "not": "Låg på 17 995 kr för Emmett matbord i den gamla feed-datan – nu mätbar direkt."},
+    {"doman": "soffadirekt.se",   "namn": "Soffadirekt",     "roll": "konkurrent",  "ean": true,  "aktiv": true},
+
+    {"doman": "ulfasa.se",        "namn": "Ulfåsa",          "roll": "konkurrent",  "ean": false, "aktiv": true,
+     "not": "En av de tre butiker som drog ner Emmett-jämförelsen. 453 överlappande produkter."},
+    {"doman": "allinterior.se",   "namn": "All interiör",    "roll": "konkurrent",  "ean": false, "aktiv": true},
 
     {"doman": "trademax.se",      "namn": "Trademax",        "roll": "konkurrent",  "ean": false, "aktiv": true, "koncern": "trademax"},
     {"doman": "chilli.se",        "namn": "Chilli",          "roll": "konkurrent",  "ean": false, "aktiv": true, "koncern": "trademax"},
