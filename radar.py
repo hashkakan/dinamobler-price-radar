@@ -102,6 +102,74 @@ def post_observations(session, observations: list) -> int:
         return len(rena)
 
 
+def rensa_kollisioner(observationer: list, log) -> tuple[list, list]:
+    """Tar bort matchningar som inte går att lita på. Returnerar (behållna, slängda).
+
+    Två kollisioner uppstår i praktiken, och båda kostar pengar om de får passera:
+
+    A) Flera av VÅRA produkter matchas mot SAMMA konkurrentsida. Selma Soffa
+       finns hos oss i tre utföranden (9 171 / 10 620 / 13 401 kr) men matchades
+       alla mot ett konkurrentpris på 7 190 kr. Sänks alla tre dit tappar vi
+       6 355 kr på den dyraste utan att ha mött någon faktisk konkurrent.
+
+    B) EN av våra produkter matchas mot FLERA sidor hos samma konkurrent.
+       Redmond sänggavel gav sex priser mellan 18 990 och 36 990 kr – olika
+       storlekar hos dem. Databasens uniknyckel är (produkt, källa, konkurrent),
+       så raderna skrev över varandra och den SISTA vann, godtyckligt vald.
+
+    Regeln är att hellre tappa en observation än att sätta fel pris. En sänkning
+    mot fel variant syns inte i statistiken – den syns i marginalen.
+    """
+    SPRIDNING_TAK = 1.10   # >10 % mellan billigaste och dyrast = olika varor
+
+    # A) En konkurrentsida får bara peka på en av våra produkter: den bäst matchade.
+    per_url = {}
+    for o in observationer:
+        per_url.setdefault(o["source_url"], []).append(o)
+    behall_a, slang = [], []
+    for url, grupp in per_url.items():
+        if len(grupp) == 1:
+            behall_a.append(grupp[0])
+            continue
+        grupp.sort(key=lambda o: (o["matched_by"] == "ean", o.get("_sakerhet", 0)),
+                   reverse=True)
+        behall_a.append(grupp[0])
+        for o in grupp[1:]:
+            o["_skal"] = f"samma konkurrentsida matchade {len(grupp)} av våra produkter"
+            slang.append(o)
+
+    # B) Per (vår produkt, konkurrent): flera sidor med spridda priser = varianter.
+    per_par = {}
+    for o in behall_a:
+        per_par.setdefault((o["product_id"], o["source"]), []).append(o)
+
+    behallna = []
+    for (_pid, _src), grupp in per_par.items():
+        if len(grupp) == 1:
+            behallna.append(grupp[0])
+            continue
+        priser = [o["price"] for o in grupp]
+        spridning = max(priser) / max(0.01, min(priser))
+        # EAN är exakt: samma streckkod = samma vara, då är billigaste rätt svar.
+        if all(o["matched_by"] == "ean" for o in grupp) or spridning <= SPRIDNING_TAK:
+            grupp.sort(key=lambda o: o["price"])
+            behallna.append(grupp[0])
+            for o in grupp[1:]:
+                o["_skal"] = "dubblett, billigaste behölls"
+                slang.append(o)
+        else:
+            for o in grupp:
+                o["_skal"] = (f"{len(grupp)} sidor hos samma konkurrent, "
+                              f"{min(priser):.0f}–{max(priser):.0f} kr "
+                              f"(spridning {spridning:.2f}) – vilken variant?")
+                slang.append(o)
+
+    if slang:
+        log(f"Kollisionsrensning: {len(slang)} osäkra matchningar slängda, "
+            f"{len(behallna)} behållna")
+    return behallna, slang
+
+
 def las_kallor(vald: str | None) -> list:
     fil = Path(__file__).with_name("sources.json")
     kallor = json.loads(fil.read_text(encoding="utf-8"))["kallor"]
@@ -161,7 +229,22 @@ def main():
         per_kalla[kalla["doman"]] = len(obs)
         alla.extend(obs)
 
+    log("")
+    alla, slangda = rensa_kollisioner(alla, log)
+    if slangda:
+        rapport = Path(__file__).with_name("osakra-matchningar.txt")
+        rader = [f"{o['competitor']}\t{o['price']:.0f} kr\tprodukt {o['product_id']}"
+                 f"\t{o.get('_skal','')}\t{o['source_url']}" for o in slangda]
+        rapport.write_text("\n".join(rader), encoding="utf-8")
+        log(f"   (skälen listade i {rapport.name})")
+        for o in slangda[:5]:
+            log(f"     slängd: produkt {o['product_id']} hos {o['competitor']} "
+                f"– {o.get('_skal','')}")
+
     ean_traffar = sum(1 for o in alla if o["matched_by"] == "ean")
+    per_kalla = {}
+    for o in alla:
+        per_kalla[o["source"]] = per_kalla.get(o["source"], 0) + 1
     log("")
     log("── Sammanfattning " + "─" * 42)
     for d, n in sorted(per_kalla.items(), key=lambda kv: kv[1], reverse=True):
