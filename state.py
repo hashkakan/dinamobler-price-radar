@@ -70,6 +70,22 @@ def behover_hamtas(post: dict | None, nu: float | None = None) -> bool:
     return alder_dygn >= grans
 
 
+HISTORIK_MAX = 5          # antal körningar som väger in i utbytet
+
+
+def notera_utbyte(state: dict, sidor: int, traffar: int) -> None:
+    """Sparar nattens utfall så budgeten kan följa var träffarna faktiskt finns."""
+    h = state.setdefault("historik", [])
+    h.append({"sidor": int(sidor), "traffar": int(traffar)})
+    del h[:-HISTORIK_MAX]
+
+
+def utbyte(doman: str) -> tuple[int, int]:
+    """(hämtade sidor, träffar) över de senaste körningarna."""
+    h = las(doman).get("historik") or []
+    return sum(int(x.get("sidor") or 0) for x in h), sum(int(x.get("traffar") or 0) for x in h)
+
+
 KATALOG_FIL = STATE_DIR / "katalog.json.gz"
 KATALOG_FARSK_DYGN = 7
 

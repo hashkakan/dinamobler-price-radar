@@ -276,6 +276,7 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         flagga = "" if hur == "ean" else f"  [namnmatch {säkerhet:.2f}]"
         log(f"      {vår['name'][:34]:34} {info['pris']:>9.0f} kr{flagga}")
 
+    state.notera_utbyte(minne, hamtade, träffar_tot)
     storlek = state.spara(doman, minne)
     log(f"    klart: {hamtade} sidor hämtade, {träffar_tot} träffar  "
         f"|  minne sparat: {state.sammanfatta(minne)} ({storlek // 1024} kB)")

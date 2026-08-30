@@ -175,6 +175,48 @@ def rensa_kollisioner(observationer: list, log) -> tuple[list, list]:
     return behallna, slang
 
 
+def fordela_budget(kallor: list, total: int, log) -> dict:
+    """Sidbudget per källa, styrd av var träffarna faktiskt finns.
+
+    Med lika budget åt alla gick 2 000 hämtningar och femtio minuter per natt
+    till fem källor som gav noll träffar, medan de som gav 120 respektive 88
+    fick exakt lika mycket. Utbytet skiljer sig med flera tiopotenser mellan
+    källor, så en jämn fördelning är i praktiken att kasta bort halva natten.
+
+    Varje källa får ett golv så att nya och tillfälligt tomma källor fortsätter
+    provas – en källa som får noll i budget kan aldrig visa att den blivit bra.
+    Resten fördelas efter träffkvot.
+    """
+    GOLV, TAK = 60, 900
+
+    kvoter, obeprovade = {}, []
+    for k in kallor:
+        sidor, traffar = state.utbyte(k["doman"])
+        if sidor < 50:
+            obeprovade.append(k["doman"])
+        else:
+            kvoter[k["doman"]] = traffar / sidor
+
+    budget = {k["doman"]: GOLV for k in kallor}
+    kvar = total - GOLV * len(kallor)
+    if kvar <= 0:
+        return budget
+
+    # Obeprövade källor får en normal andel tills de visat vad de går för.
+    medel = (sum(kvoter.values()) / len(kvoter)) if kvoter else 0.02
+    for d in obeprovade:
+        kvoter[d] = max(medel, 0.01)
+
+    summa = sum(kvoter.values()) or 1.0
+    for doman, kvot in kvoter.items():
+        budget[doman] = min(TAK, GOLV + int(kvar * kvot / summa))
+
+    rader = sorted(budget.items(), key=lambda kv: kv[1], reverse=True)
+    log("Sidbudget efter utbyte: " + ", ".join(f"{d.split('.')[0]} {n}" for d, n in rader[:8])
+        + f" … (totalt {sum(budget.values())})")
+    return budget
+
+
 def las_kallor(vald: str | None) -> list:
     fil = Path(__file__).with_name("sources.json")
     kallor = json.loads(fil.read_text(encoding="utf-8"))["kallor"]
@@ -191,8 +233,10 @@ def main():
                     help="Max antal EGNA produkter att bevaka (för test)")
     ap.add_argument("--sources", default=None,
                     help="Bara dessa domäner, kommaseparerat")
-    ap.add_argument("--max-pages", type=int, default=400,
-                    help="Max produktsidor att hämta per konkurrent")
+    ap.add_argument("--max-pages", type=int, default=0,
+                    help="Fast sidbudget per konkurrent (0 = fördela efter utbyte)")
+    ap.add_argument("--budget", type=int, default=6000,
+                    help="Total sidbudget för hela körningen")
     ap.add_argument("--dry-run", action="store_true", help="Skriv inte till sajten")
     ap.add_argument("--refresh-catalog", action="store_true",
                     help="Tvinga omhämtning av katalogen (annars cache i 7 dygn)")
@@ -239,13 +283,16 @@ def main():
         f"– de kan matchas exakt")
 
     kallor = las_kallor(args.sources)
-    log(f"Källor: {len(kallor)} st\n")
+    log(f"Källor: {len(kallor)} st")
+    budgetar = ({k["doman"]: args.max_pages for k in kallor} if args.max_pages
+                else fordela_budget(kallor, args.budget, log))
+    log("")
 
     alla, per_kalla = [], {}
     for kalla in kallor:
         try:
             obs = competitors.skanna_kalla(session, kalla, index, log,
-                                           args.max_pages, args.sleep)
+                                           budgetar.get(kalla["doman"], 60), args.sleep)
         except Exception as e:
             log(f"    FEL på {kalla['doman']}: {type(e).__name__}: {e}")
             continue
