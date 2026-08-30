@@ -46,6 +46,7 @@ STOPPORD = {
 
 NAMN_TROSKEL = 0.72     # difflib-likhet som krävs för en namnmatchning
 MIN_POANG = 2.0         # slug-poäng som krävs för att sidan ska hämtas alls
+ANDEL_SARSKILJANDE = 0.6   # delat ord måste väga minst så här mycket av produktens tyngsta
 
 
 def _fold(s: str) -> str:
@@ -317,8 +318,26 @@ def _matcha(info: dict, kandidater: list, index: Katalogindex):
     namn = info.get("namn") or ""
     if not namn:
         return None, "", 0.0
+
+    deras = tokenisera(namn)
     bäst, bästpoäng = None, 0.0
     for vår, _ in kandidater:
+        # Modellnamnet måste finnas i båda. "Ebba Hörnsoffa" och "Viola
+        # Hörnsoffa" delar bara varutypen men får 0,83 i strängliknelse – nog
+        # för att passera tröskeln, och nog för att föreslå att vi tredubblar
+        # priset på Ebba. Kräv därför att minst ett SÄLLSYNT ord delas: det är
+        # modellnamnet, inte "hörnsoffa", som avgör om det är samma vara.
+        egna = vår.get("_tokens") or set()
+        gemensamma = egna & deras
+        if not gemensamma:
+            continue
+        # Relativt, inte ett fast tal: vikterna skalar med katalogens storlek,
+        # så ett golv som fungerar för 8 produkter är fel för 12 800. Kräv att
+        # det delade ordet väger nära produktens tyngsta – då är det modellnamnet.
+        tyngsta = max((index.vikt.get(t, 0.0) for t in egna), default=0.0)
+        delat = max(index.vikt.get(t, 0.0) for t in gemensamma)
+        if tyngsta > 0 and delat < ANDEL_SARSKILJANDE * tyngsta:
+            continue
         p = namnlikhet(vår.get("name", ""), namn)
         if p > bästpoäng:
             bäst, bästpoäng = vår, p
