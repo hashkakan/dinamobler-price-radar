@@ -90,16 +90,26 @@ KATALOG_FIL = STATE_DIR / "katalog.json.gz"
 KATALOG_FARSK_DYGN = 7
 
 
+# Fält katalogen måste bära. Saknas något har endpointen utökats sedan cachen
+# skrevs, och då är cachen för gammal oavsett ålder – annars körs en ny körning
+# på gammalt format utan att någon märker det.
+KATALOG_FALT = ("id", "name", "ean", "total_sales")
+
+
 def las_katalog() -> tuple[list, float]:
-    """(produkter, ålder i dygn). Tom lista om cachen saknas eller är trasig."""
+    """(produkter, ålder i dygn). Tom lista om cachen saknas, är trasig eller föråldrad."""
     if not KATALOG_FIL.exists():
         return [], 1e9
     try:
         with gzip.open(KATALOG_FIL, "rt", encoding="utf-8") as fh:
             data = json.load(fh)
         produkter = data.get("produkter") or []
+        if not produkter:
+            return [], 1e9
+        if any(f not in produkter[0] for f in KATALOG_FALT):
+            return [], 1e9
         alder = (time.time() - float(data.get("hamtad") or 0)) / 86400
-        return (produkter, alder) if produkter else ([], 1e9)
+        return produkter, alder
     except Exception:
         return [], 1e9
 

@@ -59,6 +59,25 @@ def tokenisera(text: str) -> set:
     return {o for o in ord_ if len(o) >= 3 and o not in STOPPORD}
 
 
+def saljvikt(p: dict) -> float:
+    """Hur högt en produkt ska rankas när skrapan väljer vad som är värt ett anrop.
+
+    93 % av sortimentet (11 912 av 12 796) har aldrig sålt en enda enhet.
+    Behandlas alla lika drunknar de 303 som faktiskt säljer bland resten, och
+    prisdata på en vara som inte rör sig ger inga pengar.
+
+    Men aldrig sålda utesluts INTE – en produkt kan vara osåld just för att
+    priset är fel, och den hypotesen går bara att pröva med prisdata. De får
+    vikt 1 och hittas när de lätta poängen är tagna. Ordning, inte urval.
+    """
+    salt = int(p.get("total_sales") or 0)
+    if salt >= 5:
+        return 5.0
+    if salt >= 1:
+        return 2.5
+    return 1.0
+
+
 class Katalogindex:
     """Inverterat index över vårt eget sortiment: token → produkter.
 
@@ -74,6 +93,7 @@ class Katalogindex:
             ean = re.sub(r"\D", "", str(p.get("ean") or ""))
             if extract.giltig_ean(ean):
                 self.per_ean[ean] = p
+            p["_vikt"] = saljvikt(p)
             p["_tokens"] = tokenisera(p.get("name", ""))
             for t in p["_tokens"]:
                 self.index.setdefault(t, []).append(p)
@@ -88,7 +108,8 @@ class Katalogindex:
         poang = {}
         for t in tokens:
             for p in self.index.get(t, ())[:400]:
-                poang[p["id"]] = poang.get(p["id"], 0.0) + self.vikt.get(t, 0.0)
+                # Säljvikten avgör ordningen, inte om produkten får vara med.
+                poang[p["id"]] = poang.get(p["id"], 0.0) + self.vikt.get(t, 0.0) * p["_vikt"]
         if not poang:
             return []
         basta = sorted(poang.items(), key=lambda kv: kv[1], reverse=True)[:tak]

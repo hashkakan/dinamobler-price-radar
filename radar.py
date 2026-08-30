@@ -278,6 +278,9 @@ def main():
         katalog = katalog[:args.limit]
 
     index = competitors.Katalogindex(katalog)
+    saljare = sum(1 for p in katalog if int(p.get("total_sales") or 0) > 0)
+    log(f"Varav {saljare} som nagon gang salt – de rankas hogst nar skrapan "
+        f"valjer sidor (aldrig salda utesluts inte, bara senarelaggs)")
     med_ean = len(index.per_ean)
     log(f"Varav {med_ean} med giltig EAN ({med_ean * 100 // max(1, len(katalog))} %) "
         f"– de kan matchas exakt")
