@@ -22,6 +22,10 @@ on:
         description: "Max produktsidor per konkurrent (tomt = 400)"
         required: false
         default: ""
+      supplier:
+        description: "Riktad körning mot EN leverantör, pa_brand-namn (tomt = alla). T.ex. Rowico"
+        required: false
+        default: ""
 
 concurrency:
   group: price-radar
@@ -58,13 +62,23 @@ jobs:
         env:
           SITE_URL: ${{ secrets.SITE_URL }}
           VS_TOKEN: ${{ secrets.VS_TOKEN }}
+          # Indata går via miljövariabler, inte inklistrat i kommandoraden.
+          # Dels för att flera leverantörsnamn innehåller mellanslag
+          # ("Concept Living") och utan citering blir det två argument, dels
+          # för att inklistrad indata annars kan bryta ut ur skalkommandot.
+          IN_LIMIT: ${{ github.event.inputs.limit }}
+          IN_DRY: ${{ github.event.inputs.dry_run }}
+          IN_SOURCES: ${{ github.event.inputs.sources }}
+          IN_MAXPAGES: ${{ github.event.inputs.max_pages }}
+          IN_SUPPLIER: ${{ github.event.inputs.supplier }}
         run: |
-          ARGS=""
-          if [ -n "${{ github.event.inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"; fi
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
-          if [ -n "${{ github.event.inputs.sources }}" ]; then ARGS="$ARGS --sources ${{ github.event.inputs.sources }}"; fi
-          if [ -n "${{ github.event.inputs.max_pages }}" ]; then ARGS="$ARGS --max-pages ${{ github.event.inputs.max_pages }}"; fi
-          python radar.py $ARGS
+          ARGS=()
+          [ -n "$IN_LIMIT" ]    && ARGS+=(--limit "$IN_LIMIT")
+          [ "$IN_DRY" = "true" ] && ARGS+=(--dry-run)
+          [ -n "$IN_SOURCES" ]  && ARGS+=(--sources "$IN_SOURCES")
+          [ -n "$IN_MAXPAGES" ] && ARGS+=(--max-pages "$IN_MAXPAGES")
+          [ -n "$IN_SUPPLIER" ] && ARGS+=(--supplier "$IN_SUPPLIER")
+          python radar.py "${ARGS[@]}"
 
       # Sparas även om skrapningen bröts: halvfärdigt index är bättre än inget,
       # och nästa natt fortsätter där den här slutade.

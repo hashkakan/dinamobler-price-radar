@@ -89,11 +89,20 @@ class Katalogindex:
     def __init__(self, produkter: list):
         self.produkter = produkter
         self.per_ean = {}
+        # Produkt-id → produkt. Används för att avgöra om en URL vi redan
+        # matchat pekar på något som finns i DETTA index. Vid en riktad
+        # körning innehåller indexet bara en leverantör, och då är en gammal
+        # träff på någon annans produkt inte värd att uppdatera.
+        self.per_id = {}
         self.index = {}
         for p in produkter:
             ean = re.sub(r"\D", "", str(p.get("ean") or ""))
             if extract.giltig_ean(ean):
                 self.per_ean[ean] = p
+            try:
+                self.per_id[int(p["id"])] = p
+            except (KeyError, TypeError, ValueError):
+                pass
             p["_vikt"] = saljvikt(p)
             p["_tokens"] = tokenisera(p.get("name", ""))
             for t in p["_tokens"]:
@@ -215,11 +224,16 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
     # pris är sämre än inget. Resten går till att utforska nytt, så täckningen
     # växer natt för natt i stället för att stanna på samma 400 sidor.
     nu = time.time()
+    # Kravet "matchad_id finns i DETTA index" gör riktade körningar meningsfulla.
+    # Utan det skulle en Rowico-körning lägga 60 % av budgeten på att uppdatera
+    # sidor som matchar andra leverantörer – sidor vars träffar det filtrerade
+    # indexet ändå kastar. Vid en full körning rymmer indexet allt, så villkoret
+    # är då sant för samma URL:er som förut och beteendet är oförändrat.
     att_uppdatera = [r for r in rankade
-                     if sidor.get(r[1], {}).get("matchad_id")
+                     if sidor.get(r[1], {}).get("matchad_id") in index.per_id
                      and state.behover_hamtas(sidor.get(r[1]), nu)]
     att_utforska = [r for r in rankade
-                    if not sidor.get(r[1], {}).get("matchad_id")
+                    if sidor.get(r[1], {}).get("matchad_id") not in index.per_id
                     and state.behover_hamtas(sidor.get(r[1]), nu)]
 
     tak_uppdatera = min(len(att_uppdatera), int(max_sidor * 0.6))

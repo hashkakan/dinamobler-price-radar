@@ -54,14 +54,21 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def fetch_catalog(session, only_ean: bool = False, limit=None) -> list:
-    """Vårt eget sortiment. Token som header – URL:er hamnar i serverloggar."""
+def fetch_catalog(session, only_ean: bool = False, limit=None, supplier: str | None = None) -> list:
+    """Vårt eget sortiment. Token som header – URL:er hamnar i serverloggar.
+
+    `supplier` (pa_brand-namn, t.ex. "Rowico") ger en riktad körning: bara den
+    leverantörens produkter hamnar i indexet, och skanningen jagar därmed bara
+    deras priser.
+    """
     headers = {"X-VS-Token": VS_TOKEN}
     offset, page_size, ut = 0, 100, []
     while True:
         params = {"limit": page_size, "offset": offset}
         if only_ean:
             params["only_ean"] = 1
+        if supplier:
+            params["supplier"] = supplier
         r = session.get(API_PRODUCTS, params=params, headers=headers, timeout=30)
         r.raise_for_status()
         try:
@@ -246,6 +253,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="Skriv inte till sajten")
     ap.add_argument("--refresh-catalog", action="store_true",
                     help="Tvinga omhämtning av katalogen (annars cache i 7 dygn)")
+    ap.add_argument("--supplier", default=None,
+                    help="Riktad körning mot EN leverantör (pa_brand-namn, t.ex. Rowico). "
+                         "Katalogen filtreras, och budgeten går till sidor som redan "
+                         "visat sig bära den leverantörens produkter.")
     ap.add_argument("--sleep", type=float, default=1.5,
                     help="Sekunder mellan anrop – vi är gäster på deras servrar")
     args = ap.parse_args()
@@ -261,21 +272,36 @@ def main():
     # körning kostar ~129 anrop mot butiken innan skrapningen ens börjat, och
     # det var den lasten som fick Imunify360 att spärra runnerns IP 2026-08-29.
     # Sortimentet ändras inte över natten; en vecka gammal katalog duger.
-    katalog, alder = state.las_katalog()
-    if katalog and alder < state.KATALOG_FARSK_DYGN and not args.refresh_catalog:
-        log(f"Katalog: {len(katalog)} produkter ur cache ({alder:.1f} dygn gammal)")
+    # Riktad körning går ALDRIG via katalogcachen. Läste den cachen skulle
+    # filtret ignoreras; skrev den till cachen skulle nästa fulla nattkörning
+    # tro att hela sortimentet är 831 produkter och tyst sluta bevaka resten.
+    if args.supplier:
+        log(f"Riktad körning: bara leverantören {args.supplier!r} (katalogcachen förbigås)")
+        katalog = fetch_catalog(session, only_ean=False, limit=args.limit,
+                                supplier=args.supplier)
+        if not katalog:
+            log(f"FEL: inga produkter med leverantör {args.supplier!r}. "
+                f"Stavningen måste matcha pa_brand exakt (t.ex. 'Rowico').")
+            sys.exit(2)
+        med_ean = sum(1 for p in katalog if p.get("ean"))
+        log(f"Katalog: {len(katalog)} produkter för {args.supplier} "
+            f"({med_ean} med EAN – bara de kan matchas säkert)")
     else:
-        skal = "tvingad uppdatering" if args.refresh_catalog else f"cache {alder:.0f} dygn gammal"
-        log(f"Hämtar katalogen från sajten ({skal})…")
-        try:
-            katalog = fetch_catalog(session, only_ean=False, limit=args.limit)
-            state.spara_katalog(katalog)
-            log(f"Katalog: {len(katalog)} produkter (sparad till cache)")
-        except SystemExit:
-            if not katalog:
-                raise
-            log(f"Kunde inte hämta katalogen – kör vidare på cachen "
-                f"({len(katalog)} produkter, {alder:.0f} dygn gammal)")
+        katalog, alder = state.las_katalog()
+        if katalog and alder < state.KATALOG_FARSK_DYGN and not args.refresh_catalog:
+            log(f"Katalog: {len(katalog)} produkter ur cache ({alder:.1f} dygn gammal)")
+        else:
+            skal = "tvingad uppdatering" if args.refresh_catalog else f"cache {alder:.0f} dygn gammal"
+            log(f"Hämtar katalogen från sajten ({skal})…")
+            try:
+                katalog = fetch_catalog(session, only_ean=False, limit=args.limit)
+                state.spara_katalog(katalog)
+                log(f"Katalog: {len(katalog)} produkter (sparad till cache)")
+            except SystemExit:
+                if not katalog:
+                    raise
+                log(f"Kunde inte hämta katalogen – kör vidare på cachen "
+                    f"({len(katalog)} produkter, {alder:.0f} dygn gammal)")
 
     if not katalog:
         log("Tom katalog – avbryter.")
