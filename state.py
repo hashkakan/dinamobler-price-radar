@@ -73,17 +73,31 @@ def behover_hamtas(post: dict | None, nu: float | None = None) -> bool:
 HISTORIK_MAX = 5          # antal körningar som väger in i utbytet
 
 
-def notera_utbyte(state: dict, sidor: int, traffar: int) -> None:
-    """Sparar nattens utfall så budgeten kan följa var träffarna faktiskt finns."""
+def notera_utbyte(state: dict, sidor: int, traffar: int, nyttiga: int | None = None) -> None:
+    """Sparar nattens utfall så budgeten kan följa var de ANVÄNDBARA träffarna finns.
+
+    `nyttiga` är träffar på produkter som har ett inköpspris. Skillnaden är inte
+    akademisk: Bonus Möbler gav 42 träffar varav 41 saknade inköpspris. Utan
+    kostnad går marginalen inte att räkna, och då kan radarn aldrig säga om en
+    sänkning är trygg – de träffarna kan alltså aldrig bli ett beslut.
+    """
     h = state.setdefault("historik", [])
-    h.append({"sidor": int(sidor), "traffar": int(traffar)})
+    h.append({"sidor": int(sidor), "traffar": int(traffar),
+              "nyttiga": int(traffar if nyttiga is None else nyttiga)})
     del h[:-HISTORIK_MAX]
 
 
-def utbyte(doman: str) -> tuple[int, int]:
-    """(hämtade sidor, träffar) över de senaste körningarna."""
+def utbyte(doman: str) -> tuple[int, int, int]:
+    """(hämtade sidor, träffar, användbara träffar) över de senaste körningarna.
+
+    Poster skrivna före `nyttiga` fanns saknar nyckeln. De faller tillbaka på
+    `traffar`, så natten då detta införs blir ingen stupkant i budgeten.
+    """
     h = las(doman).get("historik") or []
-    return sum(int(x.get("sidor") or 0) for x in h), sum(int(x.get("traffar") or 0) for x in h)
+    sidor = sum(int(x.get("sidor") or 0) for x in h)
+    traffar = sum(int(x.get("traffar") or 0) for x in h)
+    nyttiga = sum(int(x.get("nyttiga", x.get("traffar")) or 0) for x in h)
+    return sidor, traffar, nyttiga
 
 
 KATALOG_FIL = STATE_DIR / "katalog.json.gz"

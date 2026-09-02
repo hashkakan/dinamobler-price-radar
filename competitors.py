@@ -229,7 +229,7 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         f"+ {len(ko) - len(att_uppdatera[:tak_uppdatera])} nya "
         f"({len(att_utforska)} outforskade kvar)")
 
-    observationer, hamtade, träffar_tot = [], 0, 0
+    observationer, hamtade, träffar_tot, nyttiga_tot = [], 0, 0, 0
     for _, url, kandidater in ko:
         r, fel = _hamta(session, url)
         time.sleep(paus)
@@ -271,6 +271,8 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
                 "_roll": kalla.get("roll", "konkurrent"),
             })
             träffar_tot += 1
+            if float(träffad.get("cost") or 0) > 0:
+                nyttiga_tot += 1
             log(f"      {träffad['name'][:34]:34} {extra['pris']:>9.0f} kr  [via sidans data]")
 
         vår, hur, säkerhet = _matcha(info, kandidater, index)
@@ -280,6 +282,8 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         post["matchad_id"] = int(vår["id"])
 
         träffar_tot += 1
+        if float(vår.get("cost") or 0) > 0:
+            nyttiga_tot += 1
         observationer.append({
             "product_id": int(vår["id"]),
             "sku": vår.get("sku", ""),
@@ -298,9 +302,10 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         flagga = "" if hur == "ean" else f"  [namnmatch {säkerhet:.2f}]"
         log(f"      {vår['name'][:34]:34} {info['pris']:>9.0f} kr{flagga}")
 
-    state.notera_utbyte(minne, hamtade, träffar_tot)
+    state.notera_utbyte(minne, hamtade, träffar_tot, nyttiga_tot)
     storlek = state.spara(doman, minne)
-    log(f"    klart: {hamtade} sidor hämtade, {träffar_tot} träffar  "
+    log(f"    klart: {hamtade} sidor hämtade, {träffar_tot} träffar "
+        f"({nyttiga_tot} med inköpspris)  "
         f"|  minne sparat: {state.sammanfatta(minne)} ({storlek // 1024} kB)")
     return observationer
 

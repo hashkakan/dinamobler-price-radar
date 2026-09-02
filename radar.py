@@ -176,26 +176,31 @@ def rensa_kollisioner(observationer: list, log) -> tuple[list, list]:
 
 
 def fordela_budget(kallor: list, total: int, log) -> dict:
-    """Sidbudget per källa, styrd av var träffarna faktiskt finns.
+    """Sidbudget per källa, styrd av var de ANVÄNDBARA träffarna finns.
 
     Med lika budget åt alla gick 2 000 hämtningar och femtio minuter per natt
     till fem källor som gav noll träffar, medan de som gav 120 respektive 88
     fick exakt lika mycket. Utbytet skiljer sig med flera tiopotenser mellan
     källor, så en jämn fördelning är i praktiken att kasta bort halva natten.
 
+    Kvoten räknas på träffar MED inköpspris, inte på träffar rakt av. En träff
+    utan kostnad kan aldrig bli ett prisbeslut – marginalen går inte att räkna,
+    så radarn kan inte säga om en sänkning är trygg. Bonus Möbler gav 42
+    träffar varav 41 saknade inköpspris; på råa träffar ser den källan
+    tio gånger bättre ut än den är.
+
     Varje källa får ett golv så att nya och tillfälligt tomma källor fortsätter
     provas – en källa som får noll i budget kan aldrig visa att den blivit bra.
-    Resten fördelas efter träffkvot.
     """
     GOLV, TAK = 60, 900
 
     kvoter, obeprovade = {}, []
     for k in kallor:
-        sidor, traffar = state.utbyte(k["doman"])
+        sidor, traffar, nyttiga = state.utbyte(k["doman"])
         if sidor < 50:
             obeprovade.append(k["doman"])
         else:
-            kvoter[k["doman"]] = traffar / sidor
+            kvoter[k["doman"]] = nyttiga / sidor
 
     budget = {k["doman"]: GOLV for k in kallor}
     kvar = total - GOLV * len(kallor)
@@ -212,7 +217,8 @@ def fordela_budget(kallor: list, total: int, log) -> dict:
         budget[doman] = min(TAK, GOLV + int(kvar * kvot / summa))
 
     rader = sorted(budget.items(), key=lambda kv: kv[1], reverse=True)
-    log("Sidbudget efter utbyte: " + ", ".join(f"{d.split('.')[0]} {n}" for d, n in rader[:8])
+    log("Sidbudget efter användbart utbyte: "
+        + ", ".join(f"{d.split('.')[0]} {n}" for d, n in rader[:8])
         + f" … (totalt {sum(budget.values())})")
     return budget
 
