@@ -2,8 +2,13 @@ name: Price Radar – skrapa konkurrentpriser
 
 on:
   schedule:
-    # Varje natt 03:15 UTC (05:15 svensk sommartid). Justera cron efter behov.
-    - cron: "15 3 * * *"
+    # Mån–lör 03:15 UTC: bara varor som faktiskt sålt (--min-sales 1, satt nedan).
+    # 12 155 av 12 967 produkter har aldrig sålts och 77 % av alla insamlade
+    # priser lag pa dem – natterna gick till varor ingen koper.
+    - cron: "15 3 * * 1-6"
+    # Sondag 03:15 UTC: hela sortimentet, sa varor som BORJAT salja hittas.
+    # Utan den skulle en ny bastsaljare aldrig komma in i bevakningen.
+    - cron: "15 3 * * 0"
   workflow_dispatch:        # låter dig köra den manuellt från Actions-fliken
     inputs:
       limit:
@@ -24,6 +29,10 @@ on:
         default: ""
       supplier:
         description: "Riktad körning mot EN leverantör, pa_brand-namn (tomt = alla). T.ex. Rowico"
+        required: false
+        default: ""
+      min_sales:
+        description: "Bara varor som sålt minst N ggr (tomt = schemats standard, 0 = hela sortimentet)"
         required: false
         default: ""
 
@@ -71,8 +80,17 @@ jobs:
           IN_SOURCES: ${{ github.event.inputs.sources }}
           IN_MAXPAGES: ${{ github.event.inputs.max_pages }}
           IN_SUPPLIER: ${{ github.event.inputs.supplier }}
+          IN_MINSALES: ${{ github.event.inputs.min_sales }}
+          SCHEMA: ${{ github.event.schedule }}
         run: |
+          # Manuell indata vinner. Annars styr schemat: vardagsnatten kor bara
+          # salda varor, sondagsnatten hela sortimentet.
+          MIN="$IN_MINSALES"
+          if [ -z "$MIN" ] && [ "$SCHEMA" = "15 3 * * 1-6" ]; then
+            MIN=1
+          fi
           ARGS=()
+          if [ -n "$MIN" ] && [ "$MIN" != "0" ]; then ARGS+=(--min-sales "$MIN"); fi
           [ -n "$IN_LIMIT" ]    && ARGS+=(--limit "$IN_LIMIT")
           [ "$IN_DRY" = "true" ] && ARGS+=(--dry-run)
           [ -n "$IN_SOURCES" ]  && ARGS+=(--sources "$IN_SOURCES")

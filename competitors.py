@@ -190,8 +190,16 @@ def disallow_och_sitemaps(session, bas: str):
 
 
 def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
-                 max_sidor: int, paus: float) -> list:
-    """Returnerar observationer för en konkurrentsajt."""
+                 max_sidor: int, paus: float, spara_utbyte: bool = True) -> list:
+    """Returnerar observationer för en konkurrentsajt.
+
+    `spara_utbyte=False` för riktade körningar (--supplier). Utbytet av en
+    körning mot EN leverantör säger ingenting om källans värde för hela
+    sortimentet: en NFG-körning gav 821 sidor och noll träffar hos Nordiska
+    Rum, och hade den siffran hamnat i historiken skulle nästa fulla nattkörning
+    ha läst det som att källan blivit värdelös och strypt dess budget.
+    URL-minnet uppdateras fortfarande – det är alltid värt att spara.
+    """
     doman = kalla["doman"]
     log(f"  {kalla['namn']} ({doman})")
 
@@ -316,7 +324,8 @@ def skanna_kalla(session, kalla: dict, index: Katalogindex, log,
         flagga = "" if hur == "ean" else f"  [namnmatch {säkerhet:.2f}]"
         log(f"      {vår['name'][:34]:34} {info['pris']:>9.0f} kr{flagga}")
 
-    state.notera_utbyte(minne, hamtade, träffar_tot, nyttiga_tot)
+    if spara_utbyte:
+        state.notera_utbyte(minne, hamtade, träffar_tot, nyttiga_tot)
     storlek = state.spara(doman, minne)
     log(f"    klart: {hamtade} sidor hämtade, {träffar_tot} träffar "
         f"({nyttiga_tot} med inköpspris)  "

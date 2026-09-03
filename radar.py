@@ -54,7 +54,8 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def fetch_catalog(session, only_ean: bool = False, limit=None, supplier: str | None = None) -> list:
+def fetch_catalog(session, only_ean: bool = False, limit=None, supplier: str | None = None,
+                  min_sales: int = 0) -> list:
     """Vårt eget sortiment. Token som header – URL:er hamnar i serverloggar.
 
     `supplier` (pa_brand-namn, t.ex. "Rowico") ger en riktad körning: bara den
@@ -69,6 +70,8 @@ def fetch_catalog(session, only_ean: bool = False, limit=None, supplier: str | N
             params["only_ean"] = 1
         if supplier:
             params["supplier"] = supplier
+        if min_sales > 0:
+            params["min_sales"] = min_sales
         r = session.get(API_PRODUCTS, params=params, headers=headers, timeout=30)
         r.raise_for_status()
         try:
@@ -253,6 +256,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="Skriv inte till sajten")
     ap.add_argument("--refresh-catalog", action="store_true",
                     help="Tvinga omhämtning av katalogen (annars cache i 7 dygn)")
+    ap.add_argument("--min-sales", type=int, default=0,
+                    help="Bara produkter som salt minst N ganger. 12 155 av 12 967 varor "
+                         "har aldrig salts, och ett konkurrentpris pa dem ar inte vart en "
+                         "hamtning. --min-sales 1 krymper indexet till 812.")
     ap.add_argument("--supplier", default=None,
                     help="Riktad körning mot EN leverantör (pa_brand-namn, t.ex. Rowico). "
                          "Katalogen filtreras, och budgeten går till sidor som redan "
@@ -275,17 +282,27 @@ def main():
     # Riktad körning går ALDRIG via katalogcachen. Läste den cachen skulle
     # filtret ignoreras; skrev den till cachen skulle nästa fulla nattkörning
     # tro att hela sortimentet är 831 produkter och tyst sluta bevaka resten.
-    if args.supplier:
-        log(f"Riktad körning: bara leverantören {args.supplier!r} (katalogcachen förbigås)")
+    # Varje filtrerad körning går förbi katalogcachen, i BÅDA riktningarna.
+    # Läste den cachen skulle filtret ignoreras; skrev den till cachen skulle
+    # nästa fulla nattkörning tro att hela sortimentet är 812 produkter och
+    # tyst sluta bevaka resten.
+    filtrerad = bool(args.supplier) or args.min_sales > 0
+    if filtrerad:
+        vad = []
+        if args.supplier:
+            vad.append(f"leverantören {args.supplier!r}")
+        if args.min_sales > 0:
+            vad.append(f"minst {args.min_sales} sålda")
+        log(f"Filtrerad körning: {' + '.join(vad)} (katalogcachen förbigås)")
         katalog = fetch_catalog(session, only_ean=False, limit=args.limit,
-                                supplier=args.supplier)
+                                supplier=args.supplier, min_sales=args.min_sales)
         if not katalog:
-            log(f"FEL: inga produkter med leverantör {args.supplier!r}. "
-                f"Stavningen måste matcha pa_brand exakt (t.ex. 'Rowico').")
+            log(f"FEL: inga produkter matchade filtret ({' + '.join(vad)}). "
+                f"Leverantörsnamnet måste matcha pa_brand exakt, t.ex. 'Rowico'.")
             sys.exit(2)
         med_ean = sum(1 for p in katalog if p.get("ean"))
-        log(f"Katalog: {len(katalog)} produkter för {args.supplier} "
-            f"({med_ean} med EAN – bara de kan matchas säkert)")
+        log(f"Katalog: {len(katalog)} produkter ({med_ean} med EAN – "
+            f"bara de kan matchas säkert)")
     else:
         katalog, alder = state.las_katalog()
         if katalog and alder < state.KATALOG_FARSK_DYGN and not args.refresh_catalog:
@@ -327,7 +344,8 @@ def main():
     for kalla in kallor:
         try:
             obs = competitors.skanna_kalla(session, kalla, index, log,
-                                           budgetar.get(kalla["doman"], 60), args.sleep)
+                                           budgetar.get(kalla["doman"], 60), args.sleep,
+                                           spara_utbyte=not filtrerad)
         except Exception as e:
             log(f"    FEL på {kalla['doman']}: {type(e).__name__}: {e}")
             continue
