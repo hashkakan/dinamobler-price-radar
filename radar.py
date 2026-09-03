@@ -137,11 +137,20 @@ def rensa_kollisioner(observationer: list, log) -> tuple[list, list]:
     #    EAN-träffar undantas – en produktsida bär ofta relaterade produkter med
     #    egna streckkoder, och olika EAN ÄR olika varor. Regeln finns för
     #    namnmatchningar, där samma sida annars fångar upp flera av våra varianter.
+    #    Nyckeln var tidigare ("ean", product_id) för EAN-träffar, vilket INTE
+    #    undantog dem – det grupperade dem på produkt, tvärs över konkurrenter,
+    #    och regeln behöll sedan bara en. Körningen 2026-09-02 slängde 225 av
+    #    749 observationer så, och det var de SÄKRA matchningarna som föll.
+    #    Marknadspris-kolumnen behöver flera konkurrentpriser per produkt och
+    #    fick aldrig se dem. EAN-träffar går nu förbi regel A helt, som avsett;
+    #    regel B nedan fångar ändå dubbletter per (produkt, konkurrent).
     per_url = {}
-    for o in observationer:
-        nyckel = ("ean", o["product_id"]) if o["matched_by"] == "ean" else o["source_url"]
-        per_url.setdefault(nyckel, []).append(o)
     behall_a, slang = [], []
+    for o in observationer:
+        if o["matched_by"] == "ean":
+            behall_a.append(o)
+            continue
+        per_url.setdefault(o["source_url"], []).append(o)
     for url, grupp in per_url.items():
         if len(grupp) == 1:
             behall_a.append(grupp[0])
@@ -340,7 +349,15 @@ def main():
                 else fordela_budget(kallor, args.budget, log))
     log("")
 
-    alla, per_kalla = [], {}
+    # Observationerna sparas EFTER VARJE KÄLLA, inte i ett svep på slutet.
+    # Förr låg 3–5 timmars insamling bara i minnet tills sista källan var klar;
+    # en krasch eller arbetsflödets tidsgräns raderade hela natten. En körning
+    # tog 5 h 25 min mot en gräns på 5 h 30 min – fem minuter från att förlora
+    # allt. Kollisionsrensningen kan köras per källa utan att ändra utfallet:
+    # regel A grupperar på source_url och regel B på (produkt, källa), båda
+    # inom EN källa.
+    alla, slangda, per_kalla, sparade = [], [], {}, 0
+    misslyckade = []          # observationer vars POST föll – tas om på slutet
     for kalla in kallor:
         try:
             obs = competitors.skanna_kalla(session, kalla, index, log,
@@ -353,11 +370,30 @@ def main():
         if kalla.get("roll") == "leverantor":
             for o in obs:
                 o["competitor"] = f"{kalla['namn']} (leverantör)"
+
+        obs, slang_har = rensa_kollisioner(obs, log)
+        slangda.extend(slang_har)
         per_kalla[kalla["doman"]] = len(obs)
         alla.extend(obs)
 
+        # Ett HTTP-fel här får inte döda resten av natten. post_observations
+        # kastar på 5xx/429, och eftersom postningen nu sker mitt i körningen
+        # skulle ett enda 503 annars kosta alla återstående källor. Det som
+        # inte gick fram läggs undan och försöks igen när körningen är klar.
+        if obs and not args.dry_run:
+            n = 0
+            try:
+                for i in range(0, len(obs), 200):
+                    n += post_observations(session, obs[i:i + 200])
+                    time.sleep(0.5)
+                sparade += n
+                log(f"    sparade {n} observationer ({sparade} totalt hittills)")
+            except Exception as e:
+                misslyckade.extend(obs[n:])
+                log(f"    kunde inte spara {len(obs) - n} observationer "
+                    f"({type(e).__name__}) – försöker igen på slutet")
+
     log("")
-    alla, slangda = rensa_kollisioner(alla, log)
     if slangda:
         rapport = Path(__file__).with_name("osakra-matchningar.txt")
         rader = [f"{o['competitor']}\t{o['price']:.0f} kr\tprodukt {o['product_id']}"
@@ -383,11 +419,18 @@ def main():
         log("Dry-run – inget sparat.")
         return
 
-    sparade = 0
-    for i in range(0, len(alla), 200):
-        sparade += post_observations(session, alla[i:i + 200])
-        time.sleep(0.5)
-    log(f"Sparade {sparade} observationer i databasen.")
+    if misslyckade:
+        log(f"Tar om {len(misslyckade)} observationer som inte gick fram…")
+        for i in range(0, len(misslyckade), 200):
+            try:
+                sparade += post_observations(session, misslyckade[i:i + 200])
+                time.sleep(0.5)
+            except Exception as e:
+                log(f"   gick fortfarande inte ({type(e).__name__}) – "
+                    f"{len(misslyckade) - i} observationer förlorade")
+                break
+
+    log(f"Sparade {sparade} observationer i databasen (löpande, per källa).")
 
 
 if __name__ == "__main__":
