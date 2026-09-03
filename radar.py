@@ -94,6 +94,23 @@ def fetch_catalog(session, only_ean: bool = False, limit=None, supplier: str | N
         offset += page_size
         if offset >= int(data.get("total", 0)):
             break
+
+    # INVARIANT: katalogen ska komma hel, och varje produkt bara en gang.
+    #
+    # Bada har brustit i skarp drift. En JOIN mot postmeta multiplicerade rader
+    # sa 12 967 produkter gav 13 442; loopen bryter pa `total` (distinkta) och
+    # de sista ~440 hamtades aldrig. Ingen logg, inget fel – bara produkter som
+    # tyst aldrig bevakades. Nu sager den ifran.
+    total = int(data.get("total", 0))
+    ids = [p.get("id") for p in ut]
+    if len(set(ids)) != len(ids):
+        log(f"VARNING: katalogen innehaller dubbletter – {len(ids)} rader, "
+            f"{len(set(ids))} unika produkter. Metavarden hamtas troligen med "
+            f"JOIN i stallet for underfraga.")
+    if limit is None and total and len(set(ids)) < total:
+        log(f"VARNING: katalogen ar ofullstandig – fick {len(set(ids))} unika "
+            f"produkter av {total}. {total - len(set(ids))} produkter kan inte "
+            f"bevakas alls.")
     return ut
 
 
@@ -430,6 +447,13 @@ def main():
                     f"{len(misslyckade) - i} observationer förlorade")
                 break
 
+    # INVARIANT: allt som overlevde kollisionsrensningen ska ocksa ha sparats.
+    # Regel A slangde tidigare 225 av 749 observationer helt tyst, for att
+    # EAN-traffar grupperades pa produkt tvars over konkurrenter. Ett glapp
+    # har betyder att observationer forsvinner utan att nagon marker det.
+    if not args.dry_run and sparade != len(alla):
+        log(f"VARNING: {len(alla)} observationer behollos men {sparade} sparades "
+            f"– {len(alla) - sparade} kom aldrig fram till databasen.")
     log(f"Sparade {sparade} observationer i databasen (löpande, per källa).")
 
 
