@@ -15,3 +15,6 @@ run-live.sh
 # Indexet mellan korningar bars av actions/cache, inte av repot
 state/
 osakra-matchningar.txt
+
+# Benchmarkavläsningar – affärsdata, inte kod
+data/

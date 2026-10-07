@@ -1,0 +1,87 @@
+name: Price Radar – Merchant Center
+
+# Googles prisbenchmark i stället för att skrapa konkurrenternas sajter.
+# Merchant Center har redan jämfört 6 340 av våra artiklar mot marknaden;
+# det här jobbet hämtar den jämförelsen och matar in den i price radar.
+#
+# Kräver två hemligheter (Settings → Secrets and variables → Actions):
+#   VS_TOKEN        – samma token som skrapan använder (venture_price_token i WP)
+#   GOOGLE_SA_KEY   – hela JSON-nyckeln för tjänstekontot, klistrad som den är.
+#                     Tjänstekontots e-postadress måste vara tillagd som
+#                     användare i Merchant Center (Inställningar → Personer
+#                     och åtkomst), annars svarar API:et 403.
+#
+# Utan GOOGLE_SA_KEY hoppar jobbet över sig självt i stället för att falla.
+
+on:
+  schedule:
+    # 04:15 UTC, efter att Google uppdaterat gårdagens benchmark.
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Torrkörning (skriv inget till sajten)"
+        type: boolean
+        default: false
+      min_gap:
+        description: "Minsta övervärde för att ta med raden (0.05 = 5 %)"
+        required: false
+        default: "0.05"
+      max_gap:
+        description: "Över detta antas Google ha matchat fel vara (0.60 = 60 %)"
+        required: false
+        default: "0.60"
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Finns tjänstekontot?
+        id: gate
+        run: |
+          if [ -z "${{ secrets.GOOGLE_SA_KEY }}" ]; then
+            echo "GOOGLE_SA_KEY saknas – hoppar över (se README-MERCHANT.md)."
+            echo "kor=nej" >> "$GITHUB_OUTPUT"
+          else
+            echo "kor=ja" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.kor == 'ja'
+        with:
+          python-version: "3.12"
+
+      - name: Installera
+        if: steps.gate.outputs.kor == 'ja'
+        run: pip install -r requirements.txt google-auth
+
+      - name: Skriv nyckelfilen
+        if: steps.gate.outputs.kor == 'ja'
+        run: |
+          printf '%s' '${{ secrets.GOOGLE_SA_KEY }}' > "$RUNNER_TEMP/sa.json"
+          chmod 600 "$RUNNER_TEMP/sa.json"
+
+      - name: Hämta benchmark och mata in
+        if: steps.gate.outputs.kor == 'ja'
+        env:
+          SITE_URL: https://dinamobler.se
+          VS_TOKEN: ${{ secrets.VS_TOKEN }}
+          MERCHANT_ID: "117899063"
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
+        run: |
+          python merchant.py --api \
+            --min-gap "${{ github.event.inputs.min_gap || '0.05' }}" \
+            --max-gap "${{ github.event.inputs.max_gap || '0.60' }}" \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} \
+            --save-unmatched omatchade.txt
+
+      - name: Spara omatchade titlar
+        if: steps.gate.outputs.kor == 'ja'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omatchade-titlar
+          path: omatchade.txt
+          if-no-files-found: ignore
