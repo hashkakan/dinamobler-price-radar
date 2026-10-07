@@ -216,7 +216,7 @@ def hamta_api(merchant_id: str) -> list[dict]:
     url = (f"https://merchantapi.googleapis.com/reports/v1/"
            f"accounts/{merchant_id}/reports:search")
     query = (
-        "SELECT offer_id, title, brand, price_micros, benchmark_price_micros, "
+        "SELECT id, offer_id, title, brand, price, benchmark_price, "
         "report_country_code "
         "FROM price_competitiveness_product_view "
         "WHERE report_country_code = 'SE'"
@@ -306,7 +306,25 @@ def matcha(rader: list[dict], index: dict[str, list], args) -> tuple[list[dict],
             "currency": "SEK",
             "stock_status": "IN_STOCK",
             "matched_by": "gtin" if rad.get("gtin") else "name",
+            "_prisavstand": abs((rad.get("pris") or 0) - vart_pris),
         })
+
+    # Flera Merchant Center-rader kan peka på SAMMA produkt: Google har en rad
+    # per variant medan vi har en produkt. Unika nyckeln i watch-tabellen är
+    # (product_id, source, competitor), så utan den här hopslagningen vore det
+    # sista varianten i listan som råkade vinna – 3 363 rader blev 1 981 utan
+    # att något sa ifrån. Behåll i stället den rad vars pris hos Google ligger
+    # närmast katalogens: det är den varianten jämförelsen faktiskt gällde.
+    per_produkt: dict[int, dict] = {}
+    for o in obs:
+        pid = o["product_id"]
+        tidigare = per_produkt.get(pid)
+        if tidigare is None or o["_prisavstand"] < tidigare["_prisavstand"]:
+            per_produkt[pid] = o
+    stat["slogs_ihop"] = len(obs) - len(per_produkt)
+    obs = list(per_produkt.values())
+    for o in obs:
+        o.pop("_prisavstand", None)
 
     stat["_omatchade"] = omatchade
     return obs, stat
@@ -373,7 +391,8 @@ def main() -> int:
     log(f"Matchning: {stat['matchade']} klara, {stat['omatchade']} utan produkt, "
         f"{stat['for_litet_gap']} under {args.min_gap:.0%}, "
         f"{stat['orimligt_gap']} över {args.max_gap:.0%} (felmatchning), "
-        f"{stat['under_cogs']} under inköpspris, {stat['gammalt_pris']} med gammalt flödespris")
+        f"{stat['under_cogs']} under inköpspris, {stat['gammalt_pris']} med gammalt flödespris, "
+        f"{stat.get('slogs_ihop', 0)} varianter slogs ihop till samma produkt")
 
     if args.save_unmatched and stat["_omatchade"]:
         args.save_unmatched.write_text("\n".join(stat["_omatchade"]), encoding="utf-8")
