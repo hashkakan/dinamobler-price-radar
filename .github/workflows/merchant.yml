@@ -72,8 +72,13 @@ jobs:
           MERCHANT_ID: "117899063"
           GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
         run: |
+          # min-gap -1 => spara ocksa rader dar vi ligger i niva med eller under
+          # marknaden. Med 0.05 (tom 2026-10-14) kastades 3 218 av 5 900
+          # matchbara rader, alla dar vi var konkurrenskraftiga, och databasen
+          # innehöll bara produkter vi var dyra pa. Dashboarden kunde darfor
+          # inte svara pa hur sortimentet ligger mot marknaden.
           python merchant.py --api \
-            --min-gap "${{ github.event.inputs.min_gap || '0.05' }}" \
+            --min-gap "${{ github.event.inputs.min_gap || '-1' }}" \
             --max-gap "${{ github.event.inputs.max_gap || '0.60' }}" \
             ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} \
             --save-unmatched omatchade.txt

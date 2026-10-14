@@ -279,12 +279,24 @@ def matcha(rader: list[dict], index: dict[str, list], args) -> tuple[list[dict],
             continue
 
         gap = (vart_pris - bench) / bench
+
+        # Rader där vi ligger I NIVÅ MED eller UNDER marknaden sparas också.
+        #
+        # Tidigare kastades allt med gap < 5 %, och det var 3 218 av 5 900
+        # matchbara rader (2026-10-13) – fler än de 2 682 som sparades. Följden
+        # blev att databasen bara innehöll produkter vi var dyra på, och
+        # dashboarden kunde inte svara på den enda fråga man faktiskt ställer:
+        # hur ligger sortimentet mot marknaden? Varje rad såg ut som ett fynd
+        # därför att de konkurrenskraftiga aldrig kom med.
+        #
+        # Kvar som bortfilter: bara orimliga gap åt BÅDA håll, som nästan alltid
+        # är felmatchningar hos Google (en matgrupp jämförd mot en ensam stol,
+        # eller tvärtom).
+        if abs(gap) > args.max_gap:
+            stat["orimligt_gap"] += 1
+            continue
         if gap < args.min_gap:
             stat["for_litet_gap"] += 1
-            continue
-        if gap > args.max_gap:
-            # Nästan alltid en felmatchning hos Google (matgrupp mot ensam stol).
-            stat["orimligt_gap"] += 1
             continue
 
         kostnad = p.get("cost")
@@ -356,8 +368,13 @@ def main() -> int:
     ap.add_argument("--merchant-id", default=os.environ.get("MERCHANT_ID", "117899063"))
     ap.add_argument("--base", default=SITE_URL)
     ap.add_argument("--token", default=VS_TOKEN)
-    ap.add_argument("--min-gap", type=float, default=0.05, help="minsta övervärde (0.05 = 5 %%)")
-    ap.add_argument("--max-gap", type=float, default=0.60, help="över detta: trolig felmatchning")
+    # Standard -1.0 = ingen undre gräns i praktiken; orimliga gap fångas av
+    # --max-gap åt båda håll. Sätt t.ex. 0.05 för att bara samla produkter vi
+    # är dyra på (som före 2026-10-14) – men då går marknadsbilden förlorad.
+    ap.add_argument("--min-gap", type=float, default=-1.0,
+                    help="minsta gap som sparas; -1 = spara även där vi är billigare")
+    ap.add_argument("--max-gap", type=float, default=0.60,
+                    help="|gap| över detta: trolig felmatchning, kastas")
     ap.add_argument("--min-marginal", type=float, default=0.10, help="benchmark måste ligga så här över COGS")
     ap.add_argument("--batch", type=int, default=200)
     ap.add_argument("--dry-run", action="store_true")
@@ -390,7 +407,7 @@ def main() -> int:
     obs, stat = matcha(rader, index, args)
     log(f"Matchning: {stat['matchade']} klara, {stat['omatchade']} utan produkt, "
         f"{stat['for_litet_gap']} under {args.min_gap:.0%}, "
-        f"{stat['orimligt_gap']} över {args.max_gap:.0%} (felmatchning), "
+        f"{stat['orimligt_gap']} med |gap| över {args.max_gap:.0%} (felmatchning), "
         f"{stat['under_cogs']} under inköpspris, {stat['gammalt_pris']} med gammalt flödespris, "
         f"{stat.get('slogs_ihop', 0)} varianter slogs ihop till samma produkt")
 
